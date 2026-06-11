@@ -1,0 +1,106 @@
+{
+  "version": "1.0.0",
+  "description": "Brand name to generic name mappings. Keys are brand names (case-insensitive lookup should be applied). Values are canonical generic names matching those used in interaction_rules.json.",
+  "synonyms": {
+    "Brufen": "Ibuprofen",
+    "Nurofen": "Ibuprofen",
+    "Advil": "Ibuprofen",
+    "Motrin": "Ibuprofen",
+    "Calprofen": "Ibuprofen",
+    "Cuprofen": "Ibuprofen",
+    "Ibugel": "Ibuprofen",
+
+    "Panadol": "Paracetamol",
+    "Tylenol": "Paracetamol",
+    "Calpol": "Paracetamol",
+    "Disprol": "Paracetamol",
+    "Lemsip": "Paracetamol",
+
+    "Glucophage": "Metformin",
+    "Fortamet": "Metformin",
+    "Riomet": "Metformin",
+    "Glumetza": "Metformin",
+
+    "Coumadin": "Warfarin",
+    "Jantoven": "Warfarin",
+
+    "Lipitor": "Atorvastatin",
+    "Sortis": "Atorvastatin",
+    "Torvast": "Atorvastatin",
+
+    "Zocor": "Simvastatin",
+    "Simvador": "Simvastatin",
+
+    "Crestor": "Rosuvastatin",
+
+    "Norvasc": "Amlodipine",
+    "Istin": "Amlodipine",
+    "Amlostin": "Amlodipine",
+
+    "Zestril": "Lisinopril",
+    "Prinivil": "Lisinopril",
+    "Carace": "Lisinopril",
+
+    "Plaquenil": "Hydroxychloroquine",
+
+    "Deltasone": "Prednisone",
+    "Rayos": "Prednisone",
+    "Sterapred": "Prednisone",
+
+    "Decortin": "Prednisolone",
+    "Prelone": "Prednisolone",
+    "Medrone": "Methylprednisolone",
+    "Solu-Medrol": "Methylprednisolone",
+    "Depo-Medrol": "Methylprednisolone",
+
+    "Rheumatrex": "Methotrexate",
+    "Trexall": "Methotrexate",
+    "Methofar": "Methotrexate",
+
+    "Synthroid": "Levothyroxine",
+    "Eltroxin": "Levothyroxine",
+    "Euthyrox": "Levothyroxine",
+    "Oroxine": "Levothyroxine",
+
+    "Zoloft": "Sertraline",
+    "Lustral": "Sertraline",
+
+    "Prozac": "Fluoxetine",
+    "Sarafem": "Fluoxetine",
+    "Oxactin": "Fluoxetine",
+
+    "Cipramil": "Citalopram",
+    "Celexa": "Citalopram",
+
+    "Efexor": "Venlafaxine",
+    "Effexor": "Venlafaxine",
+
+    "Bupropion": "Bupropion",
+    "Wellbutrin": "Bupropion",
+    "Zyban": "Bupropion",
+
+    "Remeron": "Mirtazapine",
+    "Zispin": "Mirtazapine",
+
+    "Ecotrin": "Aspirin",
+    "Disprin": "Aspirin",
+    "Cardiprin": "Aspirin",
+    "Angettes": "Aspirin",
+
+    "Plavix": "Clopidogrel",
+    "Iscover": "Clopidogrel",
+
+    "Cordarone": "Amiodarone",
+    "Pacerone": "Amiodarone",
+
+    "Aldactone": "Spironolactone",
+    "Spiroctan": "Spironolactone",
+
+    "Lasix": "Furosemide",
+    "Frusol": "Furosemide",
+    "Frumil": "Furosemide",
+
+    "Septrin": "Trimethoprim",
+    "Bactrim": "Trimethoprim"
+  }
+}

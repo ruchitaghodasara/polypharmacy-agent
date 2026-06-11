@@ -1,0 +1,53 @@
+{
+  "resourceType": "Patient",
+  "id": "patient-006",
+  "meta": {
+    "profile": ["polypharmacy-safety-agent/fhir-lite-v1"]
+  },
+  "name": [
+    {
+      "use": "official",
+      "family": "Pillai",
+      "given": ["Meena"]
+    }
+  ],
+  "gender": "female",
+  "birthDate": "1972-09-19",
+  "age": 52,
+  "conditions": [
+    {
+      "code": "HTN",
+      "display": "Hypertension",
+      "onsetDate": "2019-03-11"
+    },
+    {
+      "code": "CPAIN",
+      "display": "Chronic musculoskeletal pain",
+      "onsetDate": "2021-06-28"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Lisinopril",
+      "dose": "5mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Rekha Nambiar",
+      "speciality": "General Practice",
+      "condition": "Hypertension",
+      "prescription_date": "2023-03-15",
+      "active_status": true
+    },
+    {
+      "drug_name": "Brufen",
+      "dose": "400mg",
+      "frequency": "twice daily",
+      "prescribing_doctor": "Dr. Thomas George",
+      "speciality": "Orthopaedics",
+      "condition": "Chronic musculoskeletal pain",
+      "prescription_date": "2023-10-02",
+      "active_status": true
+    }
+  ],
+  "allergies": [],
+  "notes": "Brufen is the brand name for Ibuprofen. The agent must normalise 'Brufen' → 'Ibuprofen' via drug_synonyms.json before checking interactions. Lisinopril + Ibuprofen is a known MODERATE interaction: NSAIDs blunt the antihypertensive effect of ACE inhibitors and risk acute kidney injury. This patient is the canonical brand-name normalisation test case."
+}
