@@ -36,15 +36,16 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
-import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from llm_config import get_llm
+from langchain_core.messages import HumanMessage
 
 from tools.fhir_parser import Drug
 from tools.rule_engine import check_pairs, check_pairs_all_severity
 from memory.patient_store import PatientStore, _dict_to_drug
 from memory.knowledge_store import KnowledgeStore
 
-_CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 _SYNONYMS_PATH = Path(__file__).parent.parent / "data" / "drug_synonyms.json"
 
 # ── Tenacity-wrapped Claude call ──────────────────────────────────────────────
@@ -54,14 +55,11 @@ _SYNONYMS_PATH = Path(__file__).parent.parent / "data" / "drug_synonyms.json"
     wait=wait_exponential(multiplier=1, min=2, max=16),
     reraise=True,
 )
-def _call_claude(client: anthropic.Anthropic, prompt: str) -> str:
-    """Call Claude and return the raw text response. Retried up to 3 times."""
-    response = client.messages.create(
-        model=_CLAUDE_MODEL,
-        max_tokens=512,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text.strip()
+def _call_claude(prompt: str) -> str:
+    """Call the configured LLM and return the raw text response. Retried up to 3 times."""
+    llm = get_llm()
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return response.content.strip()
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
@@ -144,7 +142,6 @@ def _claude_check_unflagged_pairs(
     drugs: list[Drug],
     flagged_pairs: set[frozenset],
     knowledge_store: KnowledgeStore,
-    client: anthropic.Anthropic,
 ) -> list[dict]:
     """
     For every active pair NOT already flagged by rules, ask ChromaDB + Claude
@@ -167,7 +164,7 @@ def _claude_check_unflagged_pairs(
         prompt = _build_claude_prompt(drug_a.generic_name, drug_b.generic_name, chunks)
 
         try:
-            raw = _call_claude(client, prompt)
+            raw = _call_claude(prompt)
             # Strip markdown code fences if Claude wraps the JSON
             raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             result = json.loads(raw)
@@ -285,10 +282,6 @@ def run_agent(
     if knowledge_store is None:
         knowledge_store = KnowledgeStore()
         knowledge_store.init()
-    if anthropic_client is None:
-        anthropic_client = anthropic.Anthropic(
-            api_key=os.environ.get("ANTHROPIC_API_KEY", "")
-        )
 
     # Deserialise drugs from state
     drugs: list[Drug] = [_dict_to_drug(d) for d in medication_dicts]
@@ -318,7 +311,7 @@ def run_agent(
 
     # ── Step 3: Claude semantic check for uncovered pairs ─────────────────────
     claude_conflicts = _claude_check_unflagged_pairs(
-        drugs, flagged_pairs, knowledge_store, anthropic_client
+        drugs, flagged_pairs, knowledge_store
     )
 
     # ── Step 4: Merge ──────────────────────────────────────────────────────────
@@ -361,8 +354,6 @@ if __name__ == "__main__":
     knowledge_store.init()
     print(f"[PASS] ChromaDB knowledge store ({knowledge_store.document_count} chunks)\n")
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-
     # ── Test A: patient_001 (Arjun — multi-doctor, 4 drugs, expect MODERATE) ──
     print("=" * 60)
     print("TEST A: patient_001 — Arjun Sharma (4 drugs, expect MODERATE)")
@@ -385,7 +376,6 @@ if __name__ == "__main__":
         profile_state,
         store=store,
         knowledge_store=knowledge_store,
-        anthropic_client=client,
     )
 
     print(f"  overall_severity : {audit_state['overall_severity']}")
@@ -421,7 +411,6 @@ if __name__ == "__main__":
         profile_state_5,
         store=store,
         knowledge_store=knowledge_store,
-        anthropic_client=client,
     )
 
     print(f"  status           : {audit_state_5['status']}")

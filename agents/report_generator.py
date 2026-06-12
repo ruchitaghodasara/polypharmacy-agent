@@ -40,8 +40,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from llm_config import get_llm
+from langchain_core.messages import HumanMessage
 
 from tools.report_formatter import (
     build_patient_prompt,
@@ -50,8 +52,6 @@ from tools.report_formatter import (
     build_fallback_report,
 )
 from memory.patient_store import PatientStore
-
-_CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
 # ── XML tag regex ──────────────────────────────────────────────────────────────
 
@@ -75,13 +75,10 @@ _TAG_RE = {
     wait=wait_exponential(multiplier=1, min=2, max=16),
     reraise=True,
 )
-def _call_claude(client: anthropic.Anthropic, prompt: str) -> str:
-    response = client.messages.create(
-        model=_CLAUDE_MODEL,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text.strip()
+def _call_claude(prompt: str) -> str:
+    llm = get_llm()
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return response.content.strip()
 
 
 # ── Combined prompt builder ───────────────────────────────────────────────────
@@ -186,10 +183,6 @@ def run_agent(
 
     if store is None:
         store = PatientStore()
-    if anthropic_client is None:
-        anthropic_client = anthropic.Anthropic(
-            api_key=os.environ.get("ANTHROPIC_API_KEY", "")
-        )
 
     # ── Sort conflicts: CRITICAL first ─────────────────────────────────────────
     rank = {"CRITICAL": 0, "MODERATE": 1}
@@ -207,7 +200,7 @@ def run_agent(
     raw_response: str = ""
     claude_error: str | None = None
     try:
-        raw_response = _call_claude(anthropic_client, prompt)
+        raw_response = _call_claude(prompt)
     except Exception as exc:
         claude_error = str(exc)
 
@@ -280,7 +273,6 @@ if __name__ == "__main__":
         print(f"\n[FAIL] Redis — {exc}")
         sys.exit(1)
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
     knowledge_store = KnowledgeStore()
     knowledge_store.init()
     print(f"[PASS] ChromaDB ({knowledge_store.document_count} chunks)\n")
@@ -306,11 +298,10 @@ if __name__ == "__main__":
         profile,
         store=store,
         knowledge_store=knowledge_store,
-        anthropic_client=client,
     )
     audit["patient_name"] = patient_name
 
-    result = run_agent(audit, store=store, anthropic_client=client)
+    result = run_agent(audit, store=store)
 
     print(f"  status           : {result['status']}")
     print(f"  overall_severity : {result['overall_severity']}")
@@ -348,11 +339,10 @@ if __name__ == "__main__":
         profile_5,
         store=store,
         knowledge_store=knowledge_store,
-        anthropic_client=client,
     )
     audit_5["patient_name"] = patient_name_5
 
-    result_5 = run_agent(audit_5, store=store, anthropic_client=client)
+    result_5 = run_agent(audit_5, store=store)
 
     print(f"  status           : {result_5['status']}")
     print(f"  overall_severity : {result_5['overall_severity']}")
