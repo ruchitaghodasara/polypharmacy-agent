@@ -4,10 +4,12 @@
 
 const { useState, useEffect, useRef, useCallback, useReducer } = React;
 
-const API = 'http://localhost:8000';
-const WS_BASE = 'ws://localhost:8000';
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-// ─── Colour / badge helpers ────────────────────────────────────────────────────
+const API_BASE = 'http://localhost:8000/api';
+const WS_BASE  = 'ws://localhost:8000/api/ws';
+
+// ── Severity display config ───────────────────────────────────────────────────
 
 const SEV_CONFIG = {
   CRITICAL: { bg: 'bg-crit-50', border: 'border-crit-300', badge: 'bg-crit-500 text-white', dot: 'bg-crit-500', icon: '🚨', label: 'CRITICAL' },
@@ -15,18 +17,92 @@ const SEV_CONFIG = {
   NONE:     { bg: 'bg-teal-50',   border: 'border-teal-200',  badge: 'bg-teal-500 text-white',   dot: 'bg-teal-500',   icon: '✅', label: 'SAFE' },
 };
 
+// ── Error display helper ──────────────────────────────────────────────────────
+
+function displayError(msg) {
+  // Surfaces an error string in the UI; callers set state with the return value.
+  return String(msg || 'An unexpected error occurred.');
+}
+
+
+// === API CALLS ================================================================
+
+async function scanPatient(patientId, prescriptions, patientName) {
+  const res = await fetch(`${API_BASE}/patient/scan`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ patient_id: patientId, prescriptions, patient_name: patientName }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function checkDrug(patientId, drugName, dose, frequency, prescribingDoctor, condition) {
+  const res = await fetch(`${API_BASE}/doctor/check`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      patient_id:         patientId,
+      drug_name:          drugName,
+      dose,
+      frequency,
+      prescribing_doctor: prescribingDoctor,
+      condition,
+      prescription_date:  new Date().toISOString().slice(0, 10),
+    }),
+  });
+  if (res.status === 404) throw new Error('Patient profile not found. Run a Patient Scan first.');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function fetchPatientProfile(patientId) {
+  const res = await fetch(`${API_BASE}/patient/${patientId}/profile`);
+  if (!res.ok) throw new Error(res.status === 404 ? 'Patient not found.' : `HTTP ${res.status}`);
+  return res.json();
+}
+
+async function fetchAuditTrail(patientId) {
+  const res = await fetch(`${API_BASE}/patient/${patientId}/audit`);
+  if (res.status === 404) throw new Error('No audit trail found for this patient.');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+
+// === WEBSOCKET ================================================================
+
+function connectProgressSocket(patientId, onMessage) {
+  const ws = new WebSocket(`${WS_BASE}/${patientId}`);
+  // NOTE: WebSocket sends JSON — client parses event.type to update UI.
+  ws.onmessage = e => {
+    try { onMessage(JSON.parse(e.data)); } catch {}
+  };
+  return ws;
+}
+
+
+// === COMPONENTS ===============================================================
+
+// SeverityBadge — coloured pill showing CRITICAL / MODERATE / SAFE label.
 function SeverityBadge({ severity, size = 'sm' }) {
   const cfg = SEV_CONFIG[severity] || SEV_CONFIG.NONE;
   const cls = size === 'lg' ? 'px-3 py-1 text-sm font-semibold' : 'px-2 py-0.5 text-xs font-semibold';
   return <span className={`${cfg.badge} ${cls} rounded-full inline-flex items-center gap-1`}>{cfg.icon} {cfg.label}</span>;
 }
 
-// ─── Reusable UI atoms ─────────────────────────────────────────────────────────
-
+// Card — white rounded container used throughout the app.
 function Card({ children, className = '' }) {
   return <div className={`bg-white rounded-xl shadow-sm border border-slate-100 ${className}`}>{children}</div>;
 }
 
+// Spinner — animated loading indicator shown during API calls.
 function Spinner({ size = 5 }) {
   return (
     <svg className={`animate-spin w-${size} h-${size} text-teal-500`} fill="none" viewBox="0 0 24 24">
@@ -36,7 +112,8 @@ function Spinner({ size = 5 }) {
   );
 }
 
-function Button({ children, onClick, disabled, variant = 'primary', size = 'md', className = '' }) {
+// Button — primary/secondary/danger/ghost variants with size options.
+function Button({ children, onClick, disabled, variant = 'primary', size = 'md', className = '', type }) {
   const base = 'rounded-lg font-medium transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2';
   const sizes = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-base' };
   const variants = {
@@ -46,12 +123,13 @@ function Button({ children, onClick, disabled, variant = 'primary', size = 'md',
     ghost:     'text-teal-600 hover:bg-teal-50',
   };
   return (
-    <button className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} onClick={onClick} disabled={disabled}>
+    <button type={type} className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );
 }
 
+// Input — labelled text input with optional hint text.
 function Input({ label, value, onChange, placeholder, required, type = 'text', hint }) {
   return (
     <div>
@@ -66,6 +144,7 @@ function Input({ label, value, onChange, placeholder, required, type = 'text', h
   );
 }
 
+// Tabs — horizontal tab bar for switching between report audiences.
 function Tabs({ tabs, active, onChange }) {
   return (
     <div className="flex border-b border-slate-200 gap-1">
@@ -79,14 +158,13 @@ function Tabs({ tabs, active, onChange }) {
   );
 }
 
-// ─── Sidebar navigation ────────────────────────────────────────────────────────
-
+// Sidebar — fixed left navigation; highlights the active view.
 const NAV_ITEMS = [
-  { id: 'dashboard',   label: 'Dashboard',       icon: '▦' },
-  { id: 'patient',     label: 'Patient Portal',  icon: '⊕' },
-  { id: 'doctor',      label: 'Doctor Station',  icon: '⚕' },
-  { id: 'healthcard',  label: 'Health Card',     icon: '♥' },
-  { id: 'audit',       label: 'Audit Trail',     icon: '☰' },
+  { id: 'dashboard',  label: 'Dashboard',      icon: '▦' },
+  { id: 'patient',    label: 'Patient Portal',  icon: '⊕' },
+  { id: 'doctor',     label: 'Doctor Station',  icon: '⚕' },
+  { id: 'healthcard', label: 'Health Card',     icon: '♥' },
+  { id: 'audit',      label: 'Audit Trail',     icon: '☰' },
 ];
 
 function Sidebar({ view, onChange }) {
@@ -112,14 +190,13 @@ function Sidebar({ view, onChange }) {
         ))}
       </nav>
       <div className="px-5 py-4 border-t border-teal-700">
-        <div className="text-xs text-teal-400">API: {API}</div>
+        <div className="text-xs text-teal-400">API: {API_BASE}</div>
       </div>
     </aside>
   );
 }
 
-// ─── DASHBOARD ─────────────────────────────────────────────────────────────────
-
+// StatCard — gradient metric tile used in the Dashboard grid.
 function StatCard({ label, value, sub, color = 'teal', icon }) {
   const colors = {
     teal:  'from-teal-500 to-teal-600',
@@ -143,6 +220,7 @@ function StatCard({ label, value, sub, color = 'teal', icon }) {
   );
 }
 
+// Dashboard — summary tiles and recent scan history; shown on first load.
 function Dashboard({ scanHistory }) {
   const total    = scanHistory.length;
   const critical = scanHistory.filter(s => s.overall_severity === 'CRITICAL').length;
@@ -198,36 +276,31 @@ function Dashboard({ scanHistory }) {
   );
 }
 
-// ─── AGENT TRACE PANEL ─────────────────────────────────────────────────────────
-
+// AgentStepCard — single row in the live agent trace panel showing step state.
 const AGENT_STEPS = [
   { id: 'profile_builder',     label: 'Profile Builder',     desc: 'Loading medications & normalising brand names' },
-  { id: 'interaction_auditor', label: 'Interaction Auditor', desc: 'Running rule engine + Claude semantic check' },
+  { id: 'interaction_auditor', label: 'Interaction Auditor', desc: 'Running rule engine + LLM semantic check' },
   { id: 'report_generator',    label: 'Report Generator',    desc: 'Generating tiered reports for all stakeholders' },
 ];
 
 const STEP_STATE = { waiting: 'waiting', running: 'running', complete: 'complete', error: 'error' };
 
 function AgentStepCard({ step, state, message, index }) {
-  const isRunning  = state === STEP_STATE.running;
-  const isDone     = state === STEP_STATE.complete;
-  const isError    = state === STEP_STATE.error;
-  const isWaiting  = state === STEP_STATE.waiting;
-
-  const iconMap = { waiting: '○', running: null, complete: '✓', error: '✕' };
+  const isRunning = state === STEP_STATE.running;
+  const iconMap   = { waiting: '○', running: null, complete: '✓', error: '✕' };
   const ringColors = { waiting: 'border-slate-200', running: 'border-teal-400', complete: 'border-teal-500', error: 'border-crit-400' };
-  const bgColors   = { waiting: 'bg-slate-50', running: 'bg-teal-50', complete: 'bg-teal-50', error: 'bg-crit-50' };
-  const textColors = { waiting: 'text-slate-400', running: 'text-teal-600', complete: 'text-teal-700', error: 'text-crit-600' };
+  const bgColors   = { waiting: 'bg-slate-50',      running: 'bg-teal-50',      complete: 'bg-teal-50',      error: 'bg-crit-50'      };
+  const textColors = { waiting: 'text-slate-400',    running: 'text-teal-600',   complete: 'text-teal-700',   error: 'text-crit-600'   };
 
   return (
-    <div className={`flex items-start gap-3 p-3.5 rounded-lg border ${ringColors[state]} ${bgColors[state]} transition-all duration-300 ${isDone || isRunning ? 'slide-in' : ''}`}>
+    <div className={`flex items-start gap-3 p-3.5 rounded-lg border ${ringColors[state]} ${bgColors[state]} transition-all duration-300`}>
       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border-2 ${ringColors[state]} ${bgColors[state]}`}>
         {isRunning ? <Spinner size={4} /> : <span className={`text-sm font-bold ${textColors[state]}`}>{iconMap[state]}</span>}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className={`text-sm font-semibold ${textColors[state]}`}>{step.label}</span>
-          {isDone && <span className="text-xs text-teal-500 font-medium">Done</span>}
+          {state === STEP_STATE.complete && <span className="text-xs text-teal-500 font-medium">Done</span>}
           {isRunning && <span className="text-xs text-teal-400 pulse-ring font-medium">Running…</span>}
         </div>
         <p className="text-xs text-slate-500 mt-0.5">{message || step.desc}</p>
@@ -237,13 +310,12 @@ function AgentStepCard({ step, state, message, index }) {
   );
 }
 
-// ─── DROP ZONE ─────────────────────────────────────────────────────────────────
-
+// DropZone — drag-and-drop or paste area for loading a patient JSON file.
 function DropZone({ onJson }) {
-  const [active, setActive] = useState(false);
-  const [filename, setFilename]  = useState('');
-  const [pasted, setPasted] = useState('');
-  const [error, setError] = useState('');
+  const [active, setActive]   = useState(false);
+  const [filename, setFilename] = useState('');
+  const [pasted, setPasted]   = useState('');
+  const [error, setError]     = useState('');
   const inputRef = useRef();
 
   const processFile = file => {
@@ -256,7 +328,7 @@ function DropZone({ onJson }) {
         setError('');
         onJson(parsed);
       } catch {
-        setError('Invalid JSON file.');
+        setError(displayError('Invalid JSON file.'));
       }
     };
     reader.readAsText(file);
@@ -271,11 +343,10 @@ function DropZone({ onJson }) {
     setPasted(val);
     if (!val.trim()) return;
     try {
-      const parsed = JSON.parse(val);
+      onJson(JSON.parse(val));
       setError('');
-      onJson(parsed);
     } catch {
-      setError('Invalid JSON.');
+      setError(displayError('Invalid JSON.'));
     }
   };
 
@@ -307,9 +378,8 @@ function DropZone({ onJson }) {
   );
 }
 
-// ─── CONFLICT LIST ─────────────────────────────────────────────────────────────
-
-function ConflictCard({ conflict, index }) {
+// ConflictCard — expandable card showing one drug-drug or allergy conflict.
+function ConflictCard({ conflict }) {
   const [open, setOpen] = useState(false);
   const sev = conflict.severity || 'MODERATE';
   const cfg = SEV_CONFIG[sev] || SEV_CONFIG.MODERATE;
@@ -365,8 +435,7 @@ function ConflictCard({ conflict, index }) {
   );
 }
 
-// ─── REPORT TABS ───────────────────────────────────────────────────────────────
-
+// ReportTabs — tabbed view switching between patient / coordinator / physician reports.
 function ReportTabs({ reports }) {
   const [activeTab, setActiveTab] = useState('patient');
   const TABS = [
@@ -386,83 +455,59 @@ function ReportTabs({ reports }) {
   );
 }
 
-// ─── PATIENT PORTAL ────────────────────────────────────────────────────────────
-
+// PatientPortal — upload patient JSON, run safety scan, show agent trace + results.
 function PatientPortal({ onScanComplete }) {
   const [patientId, setPatientId] = useState('');
   const [patientJson, setPatientJson] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState('');
-  const [result, setResult] = useState(null);
+  const [error, setError]     = useState('');
+  const [result, setResult]   = useState(null);
   const [agentSteps, setAgentSteps] = useState(
     AGENT_STEPS.reduce((acc, s) => ({ ...acc, [s.id]: { state: STEP_STATE.waiting, message: '' } }), {})
   );
   const wsRef = useRef(null);
 
-  const connectWs = id => {
-    if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(`${WS_BASE}/api/ws/${id}`);
-    ws.onmessage = e => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.event === 'agent_complete') {
-          setAgentSteps(prev => ({
-            ...prev,
-            [data.agent]: { state: STEP_STATE.complete, message: data.message },
-          }));
-          // Mark next step as running
-          const idx = AGENT_STEPS.findIndex(s => s.id === data.agent);
-          if (idx >= 0 && idx < AGENT_STEPS.length - 1) {
-            const next = AGENT_STEPS[idx + 1].id;
-            setAgentSteps(prev => ({ ...prev, [next]: { state: STEP_STATE.running, message: '' } }));
-          }
-        }
-      } catch {}
-    };
-    wsRef.current = ws;
-  };
-
-  const resetSteps = () => {
-    const fresh = AGENT_STEPS.reduce((acc, s) => ({ ...acc, [s.id]: { state: STEP_STATE.waiting, message: '' } }), {});
-    setAgentSteps({ ...fresh, profile_builder: { state: STEP_STATE.running, message: '' } });
-  };
+  const resetSteps = () =>
+    setAgentSteps({
+      ...AGENT_STEPS.reduce((acc, s) => ({ ...acc, [s.id]: { state: STEP_STATE.waiting, message: '' } }), {}),
+      profile_builder: { state: STEP_STATE.running, message: '' },
+    });
 
   const handleSubmit = async e => {
     e.preventDefault();
-    if (!patientId.trim()) { setError('Patient ID is required.'); return; }
-    if (!patientJson)      { setError('Please upload or paste a patient JSON file.'); return; }
+    if (!patientId.trim()) { setError(displayError('Patient ID is required.')); return; }
+    if (!patientJson)      { setError(displayError('Please upload or paste a patient JSON file.')); return; }
+
     setError(''); setResult(null);
     setLoading(true);
     resetSteps();
-    connectWs(patientId.trim());
 
-    const body = {
-      patient_id: patientId.trim(),
-      prescriptions: patientJson.medications || [],
-      patient_name: patientJson.name?.[0]
-        ? `${patientJson.name[0].given?.[0] || ''} ${patientJson.name[0].family || ''}`.trim()
-        : undefined,
-    };
+    if (wsRef.current) wsRef.current.close();
+    wsRef.current = connectProgressSocket(patientId.trim(), data => {
+      if (data.event === 'agent_complete') {
+        setAgentSteps(prev => ({ ...prev, [data.agent]: { state: STEP_STATE.complete, message: data.message } }));
+        const idx = AGENT_STEPS.findIndex(s => s.id === data.agent);
+        if (idx >= 0 && idx < AGENT_STEPS.length - 1) {
+          const next = AGENT_STEPS[idx + 1].id;
+          setAgentSteps(prev => ({ ...prev, [next]: { state: STEP_STATE.running, message: '' } }));
+        }
+      }
+    });
+
+    const patientName = patientJson.name?.[0]
+      ? `${patientJson.name[0].given?.[0] || ''} ${patientJson.name[0].family || ''}`.trim()
+      : undefined;
 
     try {
-      const res = await fetch(`${API}/api/patient/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setResult({ ...data, scanned_at: new Date().toISOString() });
-      onScanComplete({ ...data, scanned_at: new Date().toISOString() });
-      // Mark all steps complete
+      const data = await scanPatient(patientId.trim(), patientJson.medications || [], patientName);
+      const stamped = { ...data, scanned_at: new Date().toISOString() };
+      setResult(stamped);
+      onScanComplete(stamped);
       setAgentSteps(AGENT_STEPS.reduce((acc, s) => ({ ...acc, [s.id]: { state: STEP_STATE.complete, message: '' } }), {}));
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err.message));
       setAgentSteps(prev => {
-        const running = Object.entries(prev).find(([,v]) => v.state === STEP_STATE.running);
+        const running = Object.entries(prev).find(([, v]) => v.state === STEP_STATE.running);
         if (!running) return prev;
         return { ...prev, [running[0]]: { state: STEP_STATE.error, message: err.message } };
       });
@@ -480,7 +525,6 @@ function PatientPortal({ onScanComplete }) {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Left — form */}
         <Card className="p-5">
           <h2 className="font-semibold text-slate-700 mb-4">Scan Input</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -502,7 +546,6 @@ function PatientPortal({ onScanComplete }) {
           </form>
         </Card>
 
-        {/* Right — agent trace */}
         <Card className="p-5">
           <h2 className="font-semibold text-slate-700 mb-4">Agent Trace</h2>
           <div className="space-y-2.5">
@@ -518,10 +561,8 @@ function PatientPortal({ onScanComplete }) {
         </Card>
       </div>
 
-      {/* Results */}
       {result && (
         <div className="space-y-5 fade-in">
-          {/* Summary bar */}
           <Card className="p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
@@ -533,7 +574,6 @@ function PatientPortal({ onScanComplete }) {
           </Card>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            {/* Conflicts */}
             <Card className="p-5">
               <h3 className="font-semibold text-slate-700 mb-3">Detected Interactions</h3>
               {result.conflicts?.length === 0 ? (
@@ -543,11 +583,10 @@ function PatientPortal({ onScanComplete }) {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {result.conflicts.map((c, i) => <ConflictCard key={i} conflict={c} index={i} />)}
+                  {result.conflicts.map((c, i) => <ConflictCard key={i} conflict={c} />)}
                 </div>
               )}
             </Card>
-            {/* Reports */}
             <Card className="p-5">
               <h3 className="font-semibold text-slate-700 mb-3">Reports</h3>
               <ReportTabs reports={result.reports || {}} />
@@ -559,8 +598,7 @@ function PatientPortal({ onScanComplete }) {
   );
 }
 
-// ─── DOCTOR STATION ────────────────────────────────────────────────────────────
-
+// CriticalAlertBanner — blocking red banner shown when CRITICAL interactions are found.
 function CriticalAlertBanner({ conflicts, onDismiss }) {
   const [ackText, setAckText] = useState('');
   const critical = conflicts.filter(c => c.severity === 'CRITICAL');
@@ -600,6 +638,7 @@ function CriticalAlertBanner({ conflicts, onDismiss }) {
   );
 }
 
+// SafeConfirmBanner — green confirmation shown when a new drug is safe to prescribe.
 function SafeConfirmBanner({ drugName, patientId }) {
   return (
     <div className="bg-teal-50 border-2 border-teal-300 rounded-xl p-5 fade-in">
@@ -619,8 +658,9 @@ function SafeConfirmBanner({ drugName, patientId }) {
   );
 }
 
+// DoctorStation — form for checking a new prescription; shows alerts or safe confirmation.
 function DoctorStation() {
-  const [form, setForm] = useState({ patient_id: '', drug_name: '', dose: '', frequency: 'once daily', prescribing_doctor: '', condition: '' });
+  const [form, setForm]       = useState({ patient_id: '', drug_name: '', dose: '', frequency: 'once daily', prescribing_doctor: '', condition: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState('');
   const [result, setResult]   = useState(null);
@@ -630,23 +670,19 @@ function DoctorStation() {
 
   const handleSubmit = async e => {
     e.preventDefault();
-    const missing = Object.entries(form).filter(([k,v]) => k !== 'frequency' && !v.trim()).map(([k]) => k);
-    if (missing.length) { setError(`Required fields: ${missing.join(', ')}`); return; }
+    const missing = Object.entries(form).filter(([k, v]) => k !== 'frequency' && !v.trim()).map(([k]) => k);
+    if (missing.length) { setError(displayError(`Required fields: ${missing.join(', ')}`)); return; }
+
     setError(''); setResult(null); setDismissed(false);
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/doctor/check`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, prescription_date: new Date().toISOString().slice(0, 10) }),
-      });
-      if (res.status === 404) throw new Error('Patient profile not found. Run a Patient Scan first.');
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
-      setResult(await res.json());
+      const data = await checkDrug(
+        form.patient_id, form.drug_name, form.dose,
+        form.frequency, form.prescribing_doctor, form.condition,
+      );
+      setResult(data);
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err.message));
     } finally {
       setLoading(false);
     }
@@ -663,14 +699,14 @@ function DoctorStation() {
         <Card className="p-5">
           <h2 className="font-semibold text-slate-700 mb-4">New Prescription Check</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <Input label="Patient ID" value={form.patient_id} onChange={set('patient_id')} placeholder="patient-001" required />
+            <Input label="Patient ID"          value={form.patient_id}         onChange={set('patient_id')}         placeholder="patient-001" required />
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Drug Name" value={form.drug_name} onChange={set('drug_name')} placeholder="Aspirin" required />
-              <Input label="Dose" value={form.dose} onChange={set('dose')} placeholder="75mg" required />
+              <Input label="Drug Name"          value={form.drug_name}          onChange={set('drug_name')}          placeholder="Aspirin"     required />
+              <Input label="Dose"               value={form.dose}               onChange={set('dose')}               placeholder="75mg"        required />
             </div>
-            <Input label="Frequency" value={form.frequency} onChange={set('frequency')} placeholder="once daily" />
-            <Input label="Prescribing Doctor" value={form.prescribing_doctor} onChange={set('prescribing_doctor')} placeholder="Dr. Smith" required />
-            <Input label="Condition" value={form.condition} onChange={set('condition')} placeholder="Hypertension" required />
+            <Input label="Frequency"            value={form.frequency}          onChange={set('frequency')}          placeholder="once daily" />
+            <Input label="Prescribing Doctor"   value={form.prescribing_doctor} onChange={set('prescribing_doctor')} placeholder="Dr. Smith"   required />
+            <Input label="Condition"            value={form.condition}          onChange={set('condition')}          placeholder="Hypertension" required />
             {error && <div className="text-sm text-crit-600 bg-crit-50 border border-crit-200 rounded-lg px-3 py-2">{error}</div>}
             <Button type="submit" disabled={loading} size="lg" className="w-full justify-center">
               {loading ? <><Spinner size={4} /> Checking…</> : '⚕ Check Prescription'}
@@ -684,10 +720,7 @@ function DoctorStation() {
           )}
           {result && (dismissed || result.severity !== 'CRITICAL') && (
             <>
-              {result.safe_to_prescribe
-                ? <SafeConfirmBanner drugName={form.drug_name} patientId={form.patient_id} />
-                : !dismissed && null
-              }
+              {result.safe_to_prescribe && <SafeConfirmBanner drugName={form.drug_name} patientId={form.patient_id} />}
               {result.conflicts?.length > 0 && (
                 <Card className="p-5">
                   <h3 className="font-semibold text-slate-700 mb-3">Interactions Found</h3>
@@ -719,29 +752,20 @@ function DoctorStation() {
   );
 }
 
-// ─── HEALTH CARD ───────────────────────────────────────────────────────────────
-
+// HealthCard — loads a patient profile from Redis and shows a medication checklist.
 function HealthCard() {
   const [patientId, setPatientId] = useState('');
   const [loading, setLoading]     = useState(false);
   const [profile, setProfile]     = useState(null);
-  const [conflicts, setConflicts] = useState([]);
   const [error, setError]         = useState('');
 
-  const fetchProfile = async () => {
-    if (!patientId.trim()) { setError('Enter a Patient ID.'); return; }
-    setError(''); setLoading(true); setProfile(null); setConflicts([]);
+  const handleLoad = async () => {
+    if (!patientId.trim()) { setError(displayError('Enter a Patient ID.')); return; }
+    setError(''); setLoading(true); setProfile(null);
     try {
-      const [profRes, scanRes] = await Promise.allSettled([
-        fetch(`${API}/api/patient/${patientId.trim()}/profile`),
-        fetch(`${API}/api/patient/${patientId.trim()}/audit`),
-      ]);
-      if (profRes.status === 'fulfilled') {
-        if (!profRes.value.ok) throw new Error(profRes.value.status === 404 ? 'Patient not found.' : `HTTP ${profRes.value.status}`);
-        setProfile(await profRes.value.json());
-      }
+      setProfile(await fetchPatientProfile(patientId.trim()));
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err.message));
     } finally {
       setLoading(false);
     }
@@ -759,10 +783,9 @@ function HealthCard() {
       <Card className="p-5">
         <div className="flex gap-3">
           <div className="flex-1">
-            <Input value={patientId} onChange={setPatientId} placeholder="Enter Patient ID…"
-              hint="Fetches live data from Redis" />
+            <Input value={patientId} onChange={setPatientId} placeholder="Enter Patient ID…" hint="Fetches live data from Redis" />
           </div>
-          <Button onClick={fetchProfile} disabled={loading} className="mt-0 self-end">
+          <Button onClick={handleLoad} disabled={loading} className="mt-0 self-end">
             {loading ? <Spinner size={4} /> : 'Load'}
           </Button>
         </div>
@@ -771,7 +794,6 @@ function HealthCard() {
 
       {profile && (
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 fade-in">
-          {/* Medication table */}
           <Card className="xl:col-span-2 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
               <h2 className="font-semibold text-slate-700">Current Medications</h2>
@@ -812,7 +834,6 @@ function HealthCard() {
             </div>
           </Card>
 
-          {/* Tell your doctor checklist */}
           <Card className="p-5">
             <h2 className="font-semibold text-slate-700 mb-1">Tell Your Doctor</h2>
             <p className="text-xs text-slate-400 mb-4">Bring this checklist to every appointment</p>
@@ -821,9 +842,7 @@ function HealthCard() {
                 <label key={i} className="flex items-start gap-2.5 cursor-pointer group">
                   <input type="checkbox" className="mt-0.5 accent-teal-600 w-4 h-4 flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-slate-700 group-hover:text-teal-600 transition">
-                      {m.generic_name} {m.dose}
-                    </p>
+                    <p className="text-sm font-medium text-slate-700 group-hover:text-teal-600 transition">{m.generic_name} {m.dose}</p>
                     <p className="text-xs text-slate-400">{m.prescribing_doctor}</p>
                   </div>
                 </label>
@@ -840,16 +859,15 @@ function HealthCard() {
   );
 }
 
-// ─── AUDIT TRAIL ───────────────────────────────────────────────────────────────
-
+// AuditTimeline — fetches and renders the SQLite audit trail as a vertical timeline.
 const NODE_ICONS = {
-  profile_builder_node:      '👤',
-  interaction_auditor_node:  '🔍',
-  human_checkpoint_node:     '👁',
-  report_generator_node:     '📝',
-  immediate_alert_node:      '🚨',
-  safe_confirm_node:         '✅',
-  confirm_and_persist_node:  '💾',
+  profile_builder_node:     '👤',
+  interaction_auditor_node: '🔍',
+  human_checkpoint_node:    '👁',
+  report_generator_node:    '📝',
+  immediate_alert_node:     '🚨',
+  safe_confirm_node:        '✅',
+  confirm_and_persist_node: '💾',
 };
 
 const SEV_TIMELINE_COLOR = {
@@ -865,17 +883,14 @@ function AuditTimeline() {
   const [entries, setEntries]     = useState(null);
   const [error, setError]         = useState('');
 
-  const fetchAudit = async () => {
-    if (!patientId.trim()) { setError('Enter a Patient ID.'); return; }
+  const handleLoad = async () => {
+    if (!patientId.trim()) { setError(displayError('Enter a Patient ID.')); return; }
     setError(''); setLoading(true);
     try {
-      const res = await fetch(`${API}/api/patient/${patientId.trim()}/audit`);
-      if (res.status === 404) throw new Error('No audit trail found for this patient.');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await fetchAuditTrail(patientId.trim());
       setEntries(data.entries);
     } catch (err) {
-      setError(err.message);
+      setError(displayError(err.message));
     } finally {
       setLoading(false);
     }
@@ -893,7 +908,7 @@ function AuditTimeline() {
           <div className="flex-1">
             <Input value={patientId} onChange={setPatientId} placeholder="Enter Patient ID…" />
           </div>
-          <Button onClick={fetchAudit} disabled={loading} className="self-end">
+          <Button onClick={handleLoad} disabled={loading} className="self-end">
             {loading ? <Spinner size={4} /> : 'Load Trail'}
           </Button>
         </div>
@@ -911,13 +926,12 @@ function AuditTimeline() {
             <p className="text-sm text-slate-400 text-center py-8">No audit events found.</p>
           ) : (
             <div className="relative">
-              {/* Vertical line */}
               <div className="absolute left-5 top-0 bottom-0 w-px bg-slate-200" />
               <div className="space-y-4">
                 {entries.map((entry, i) => {
                   const dotColor = SEV_TIMELINE_COLOR[entry.severity] || 'bg-slate-400';
                   const nodeIcon = NODE_ICONS[entry.node_name] || '⬡';
-                  const snap = entry.state_snapshot;
+                  const snap     = entry.state_snapshot;
                   return (
                     <div key={entry.id || i} className="flex gap-4 pl-2 slide-in">
                       <div className={`w-6 h-6 rounded-full ${dotColor} flex items-center justify-center flex-shrink-0 z-10 ring-2 ring-white`}>
@@ -927,15 +941,13 @@ function AuditTimeline() {
                         <div className="flex items-start justify-between gap-2 flex-wrap">
                           <div>
                             <span className="text-sm font-semibold text-slate-700">{entry.node_name}</span>
-                            <span className="ml-2 text-xs text-slate-400 font-mono">
-                              {new Date(entry.timestamp).toLocaleTimeString()}
-                            </span>
+                            <span className="ml-2 text-xs text-slate-400 font-mono">{new Date(entry.timestamp).toLocaleTimeString()}</span>
                           </div>
                           <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${
                             entry.severity === 'CRITICAL' ? 'bg-crit-100 text-crit-700' :
                             entry.severity === 'MODERATE' ? 'bg-amber-100 text-amber-700' :
                             entry.severity === 'NONE'     ? 'bg-teal-100 text-teal-700' :
-                            'bg-slate-100 text-slate-600'}`}>
+                                                            'bg-slate-100 text-slate-600'}`}>
                             {entry.severity}
                           </span>
                         </div>
@@ -962,10 +974,12 @@ function AuditTimeline() {
   );
 }
 
-// ─── ROOT APP ──────────────────────────────────────────────────────────────────
 
+// === MAIN APP =================================================================
+
+// App — root component; owns navigation state and scan history shared across views.
 function App() {
-  const [view, setView]             = useState('dashboard');
+  const [view, setView]           = useState('dashboard');
   const [scanHistory, setScanHistory] = useState([]);
 
   const handleScanComplete = useCallback(result => {
@@ -973,11 +987,11 @@ function App() {
   }, []);
 
   const VIEWS = {
-    dashboard: <Dashboard scanHistory={scanHistory} />,
-    patient:   <PatientPortal onScanComplete={handleScanComplete} />,
-    doctor:    <DoctorStation />,
+    dashboard:  <Dashboard scanHistory={scanHistory} />,
+    patient:    <PatientPortal onScanComplete={handleScanComplete} />,
+    doctor:     <DoctorStation />,
     healthcard: <HealthCard />,
-    audit:     <AuditTimeline />,
+    audit:      <AuditTimeline />,
   };
 
   return (
