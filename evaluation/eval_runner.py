@@ -35,6 +35,7 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 from graph.safety_graph import run_patient_flow, _get_store, _get_audit  # noqa: E402
 from audit.audit_logger import AuditLogger  # noqa: E402
+from llm_config import get_eval_llm  # noqa: E402  — Cerebras, used for high-volume eval runs
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _PATIENTS_DIR = _PROJECT_ROOT / "data" / "mock_patients"
@@ -232,6 +233,7 @@ def format_report(results: list[dict], agg: dict) -> str:
     lines.append("=" * 72)
     lines.append("  POLYPHARMACY SAFETY AGENT — EVALUATION REPORT")
     lines.append(f"  Generated : {ts}")
+    lines.append(f"  LLM Provider : {os.getenv('LLM_PROVIDER', 'gemini')} | Eval LLM: cerebras")
     lines.append("=" * 72)
     lines.append("")
 

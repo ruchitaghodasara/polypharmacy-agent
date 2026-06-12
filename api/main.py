@@ -30,7 +30,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,10 +89,22 @@ async def lifespan(app: FastAPI):
         log.error(f"✗ AuditLogger FAILED: {exc}")
         _audit = None
 
-    if _store and _knowledge_store and _audit:
+    # LLM connectivity check
+    _llm_ok = False
+    try:
+        from llm_config import get_llm
+        from langchain_core.messages import HumanMessage
+        llm = get_llm()
+        llm.invoke([HumanMessage(content="ping")])
+        _llm_ok = True
+        log.info(f"✓ LLM ready: {os.getenv('LLM_PROVIDER', 'gemini')}")
+    except Exception as exc:
+        log.error(f"✗ LLM FAILED: {exc}")
+
+    if _store and _knowledge_store and _audit and _llm_ok:
         log.info("✓ READY — all systems operational")
     else:
-        log.warning("⚠ DEGRADED — one or more backing services failed to initialise")
+        log.warning("⚠ DEGRADED — one or more backing services (Redis / ChromaDB / LLM) failed to initialise")
 
     yield
 
