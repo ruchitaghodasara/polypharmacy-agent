@@ -1,17 +1,11 @@
+# Eval: Polypharmacy Safety Agent — Golden Dataset Evaluation
+# Patients: 6 golden cases
+# Metrics: critical_recall, f1_score, normalisation_accuracy, latency, audit_completeness
+# Output: evaluation/results/eval_report.txt
+
 """
-Evaluation runner for the Polypharmacy Safety Agent.
-
 Loads all 6 mock patients, runs the full LangGraph pipeline for each, and
-compares outputs against golden_dataset.json to compute:
-
-  - Critical recall    : fraction of CRITICAL patients correctly identified
-  - Conflict F1        : precision/recall/F1 over detected drug-pair conflicts
-  - Normalisation acc  : patient-006 Brufen → Ibuprofen must succeed
-  - Average latency    : mean wall-clock seconds per patient
-  - Audit completeness : all 6 patients have SQLite audit entries
-
-Prints a formatted report to stdout and writes it to
-evaluation/results/eval_report.txt.
+compares outputs against golden_dataset.json.
 
 Exit code 1 if critical recall < 100 %.
 """
@@ -130,8 +124,8 @@ def evaluate_patient(
     fp          = len(detected - expected)
     fn          = len(expected - detected)
 
-    precision   = tp / (tp + fp) if (tp + fp) > 0 else 1.0   # no FP → perfect precision
-    recall      = tp / (tp + fn) if (tp + fn) > 0 else 1.0   # no expected conflicts → 1.0
+    precision   = tp / (tp + fp) if (tp + fp) > 0 else 1.0
+    recall      = tp / (tp + fn) if (tp + fn) > 0 else 1.0
 
     f1          = (
         2 * precision * recall / (precision + recall)
@@ -139,7 +133,7 @@ def evaluate_patient(
         else 0.0
     )
 
-    overall_sev = final.get("overall_severity", "NONE")
+    overall_sev  = final.get("overall_severity", "NONE")
     expected_sev = golden["expected_overall_severity"]
     severity_correct = (overall_sev == expected_sev)
 
@@ -175,49 +169,55 @@ def evaluate_patient(
     }
 
 
-# ── Aggregate metrics ─────────────────────────────────────────────────────────
+# ── Metric helpers ────────────────────────────────────────────────────────────
 
-def compute_aggregate(results: list[dict]) -> dict:
-    # Critical recall
-    critical_patients = [r for r in results if r["expected_severity"] == "CRITICAL"]
-    critical_correct  = [r for r in critical_patients if r["severity_correct"]]
-    critical_recall   = (
-        len(critical_correct) / len(critical_patients)
-        if critical_patients else 1.0
-    )
+def _calc_critical_recall(results: list[dict]) -> float:
+    """Fraction of CRITICAL-severity patients correctly identified."""
+    critical = [r for r in results if r["expected_severity"] == "CRITICAL"]
+    correct  = [r for r in critical if r["severity_correct"]]
+    return len(correct) / len(critical) if critical else 1.0
 
-    # Micro-averaged conflict F1
+
+def _calc_f1(results: list[dict]) -> dict:
+    """Micro-averaged precision, recall, and F1 over all detected conflict pairs."""
     total_tp = sum(r["tp"] for r in results)
     total_fp = sum(r["fp"] for r in results)
     total_fn = sum(r["fn"] for r in results)
-    micro_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 1.0
-    micro_recall    = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 1.0
-    micro_f1        = (
-        2 * micro_precision * micro_recall / (micro_precision + micro_recall)
-        if (micro_precision + micro_recall) > 0 else 0.0
+    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 1.0
+    recall    = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 1.0
+    f1        = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0 else 0.0
     )
+    return {"precision": precision, "recall": recall, "f1": f1}
 
-    # Normalisation
+
+def _calc_latency(results: list[dict]) -> float:
+    """Mean wall-clock seconds per patient."""
+    return sum(r["latency_s"] for r in results) / len(results) if results else 0.0
+
+
+# ── Aggregate metrics ─────────────────────────────────────────────────────────
+
+def compute_aggregate(results: list[dict]) -> dict:
+    f1_metrics = _calc_f1(results)
+
     norm_results = [r for r in results if r["norm_ok"] is not None]
     norm_acc     = (
         sum(1 for r in norm_results if r["norm_ok"]) / len(norm_results)
         if norm_results else None
     )
 
-    avg_latency = sum(r["latency_s"] for r in results) / len(results) if results else 0.0
-
-    audit_complete = all(r["has_audit"] for r in results)
-
     severity_accuracy = sum(1 for r in results if r["severity_correct"]) / len(results) if results else 0.0
 
     return {
-        "critical_recall":    critical_recall,
-        "micro_precision":    micro_precision,
-        "micro_recall":       micro_recall,
-        "micro_f1":           micro_f1,
+        "critical_recall":    _calc_critical_recall(results),
+        "micro_precision":    f1_metrics["precision"],
+        "micro_recall":       f1_metrics["recall"],
+        "micro_f1":           f1_metrics["f1"],
         "norm_accuracy":      norm_acc,
-        "avg_latency_s":      avg_latency,
-        "audit_complete":     audit_complete,
+        "avg_latency_s":      _calc_latency(results),
+        "audit_complete":     all(r["has_audit"] for r in results),
         "severity_accuracy":  severity_accuracy,
         "n_patients":         len(results),
         "n_errors":           sum(1 for r in results if r["error"]),
@@ -232,7 +232,7 @@ def format_report(results: list[dict], agg: dict) -> str:
 
     lines.append("=" * 72)
     lines.append("  POLYPHARMACY SAFETY AGENT — EVALUATION REPORT")
-    lines.append(f"  Generated : {ts}")
+    lines.append(f"  Generated    : {ts}")
     lines.append(f"  LLM Provider : {os.getenv('LLM_PROVIDER', 'gemini')} | Eval LLM: cerebras")
     lines.append("=" * 72)
     lines.append("")
@@ -287,30 +287,40 @@ def format_report(results: list[dict], agg: dict) -> str:
                 lines.append(f"    [FP] {parts[0]} + {parts[1]}")
     lines.append("")
 
-    # Aggregate metrics
+    # Aggregate metrics table
     lines.append("AGGREGATE METRICS")
     lines.append("=" * 72)
+    col = f"{'METRIC':<32} {'TARGET':>8}  {'ACTUAL':>8}  {'STATUS'}"
+    lines.append(col)
+    lines.append("-" * 72)
 
-    cr_pct   = agg["critical_recall"] * 100
-    cr_pass  = "PASS ✓" if agg["critical_recall"] >= 1.0 else "FAIL ✗  ← EXIT CODE 1"
-    lines.append(f"  Critical Recall          : {cr_pct:6.1f}%   [{cr_pass}]  (target: 100%)")
+    cr     = agg["critical_recall"]
+    cr_pct = f"{cr * 100:.1f}%"
+    cr_status = "PASS ✓" if cr >= 1.0 else "FAIL ✗  ← EXIT CODE 1"
+    lines.append(f"{'Critical Recall':<32} {'100%':>8}  {cr_pct:>8}  {cr_status}")
 
-    lines.append(f"  Conflict Micro-F1        : {agg['micro_f1']*100:6.1f}%")
-    lines.append(f"    Precision              : {agg['micro_precision']*100:6.1f}%")
-    lines.append(f"    Recall                 : {agg['micro_recall']*100:6.1f}%")
+    f1_pct = f"{agg['micro_f1'] * 100:.1f}%"
+    lines.append(f"{'Conflict Micro-F1':<32} {'—':>8}  {f1_pct:>8}  —")
+    lines.append(f"{'  Precision':<32} {'—':>8}  {agg['micro_precision']*100:>7.1f}%  —")
+    lines.append(f"{'  Recall':<32} {'—':>8}  {agg['micro_recall']*100:>7.1f}%  —")
 
     if agg["norm_accuracy"] is not None:
-        na_pct  = agg["norm_accuracy"] * 100
-        na_pass = "PASS ✓" if agg["norm_accuracy"] >= 1.0 else "FAIL ✗"
-        lines.append(f"  Normalisation Accuracy   : {na_pct:6.1f}%   [{na_pass}]  (patient-006 Brufen→Ibuprofen)")
+        na_pct    = f"{agg['norm_accuracy'] * 100:.1f}%"
+        na_status = "PASS ✓" if agg["norm_accuracy"] >= 1.0 else "FAIL ✗"
+        lines.append(f"{'Normalisation Accuracy':<32} {'100%':>8}  {na_pct:>8}  {na_status}")
 
-    lines.append(f"  Severity Accuracy        : {agg['severity_accuracy']*100:6.1f}%")
-    lines.append(f"  Average Latency          : {agg['avg_latency_s']:6.2f} s / patient")
+    sv_pct = f"{agg['severity_accuracy'] * 100:.1f}%"
+    lines.append(f"{'Severity Accuracy':<32} {'—':>8}  {sv_pct:>8}  —")
 
-    audit_sym = "PASS ✓" if agg["audit_complete"] else "FAIL ✗"
-    lines.append(f"  Audit Log Completeness   : {audit_sym}")
-    lines.append(f"  Patients evaluated       : {agg['n_patients']}")
-    lines.append(f"  Pipeline errors          : {agg['n_errors']}")
+    lat = f"{agg['avg_latency_s']:.2f} s"
+    lines.append(f"{'Average Latency':<32} {'—':>8}  {lat:>8}  —")
+
+    audit_status = "PASS ✓" if agg["audit_complete"] else "FAIL ✗"
+    lines.append(f"{'Audit Log Completeness':<32} {'—':>8}  {'—':>8}  {audit_status}")
+
+    lines.append("-" * 72)
+    lines.append(f"  Patients evaluated : {agg['n_patients']}")
+    lines.append(f"  Pipeline errors    : {agg['n_errors']}")
     lines.append("=" * 72)
 
     return "\n".join(lines)
@@ -347,12 +357,10 @@ def main() -> int:
 
     print(report)
 
-    # Save to file
     _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _REPORT_PATH.write_text(report, encoding="utf-8")
     print(f"\nReport saved → {_REPORT_PATH}")
 
-    # Exit code 1 if critical recall < 100 %
     if agg["critical_recall"] < 1.0:
         print("\nERROR: Critical recall below 100% — exiting with code 1.", file=sys.stderr)
         return 1

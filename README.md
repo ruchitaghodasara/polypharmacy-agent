@@ -13,78 +13,27 @@ When a patient sees a cardiologist, a rheumatologist, and an endocrinologist ind
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+# 1. Copy .env.example to .env and fill in your API keys
+cp .env.example .env
 
-# 2. Start the backend (terminal 1)
-uvicorn api.main:app --reload
+# 2. Start the backend
+uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
-# 3. Open the frontend (terminal 2 — or open ui/index.html directly in a browser)
+# 3. Open the frontend at http://localhost:3000 or open ui/index.html directly in a browser
 npm start
 ```
 
-Copy `.env.example` to `.env` and fill in your keys before starting. See [Environment Variables](#environment-variables) below.
-
-> **Setup check:** run `python setup_check.py` first to verify Redis, ChromaDB, Anthropic API, and sentence-transformers are all reachable.
+> **Setup check:** run `python setup_check.py` first to verify Redis, ChromaDB, and sentence-transformers are all reachable.
 
 ---
 
 ## Architecture
 
-```
-                   ┌─────────────────────────────────────────────────┐
-                   │              LangGraph StateGraph                │
-                   │                                                  │
-  FHIR Patient ──► │  ┌─────────────────┐                            │
-  JSON / New Rx    │  │ ProfileBuilder   │ writes Redis               │
-                   │  │    Agent         │──────────────────────────► │
-                   │  └────────┬────────┘                            │
-                   │           │ medications[]                        │
-                   │  ┌────────▼────────┐   ChromaDB RAG             │
-                   │  │ Interaction      │──────────────────────────► │
-                   │  │ Auditor Agent    │   + Claude JSON check      │
-                   │  └────────┬────────┘                            │
-                   │           │ conflicts[]  severity                │
-                   │      ┌────▼─────┐  MODERATE                     │
-                   │      │ Human    │◄── interrupt (HITL)            │
-                   │      │Checkpoint│                                │
-                   │      └────┬─────┘                               │
-                   │           │ approve / reject                     │
-                   │  ┌────────▼────────┐                            │
-                   │  │ Report Generator │ 3-audience XML reports     │
-                   │  │    Agent         │                            │
-                   │  └─────────────────┘                            │
-                   └─────────────────────────────────────────────────┘
-                           │                     │
-                     FastAPI REST          SQLite Audit Log
-                     + WebSocket           (every node event)
-```
-
-### Agents
-
-| Agent | Responsibility |
-|---|---|
-| **PatientProfileBuilderAgent** | Sole writer to patient memory — parses FHIR-lite JSON, normalises brand drug names to generics (60-entry synonym map), and persists the canonical medication list to Redis. |
-| **DrugInteractionAuditorAgent** | Five-step pipeline: allergy check → deterministic rule engine (15 curated rules) → ChromaDB RAG retrieval → Claude semantic classification for uncovered pairs → conflict merge with CRITICAL-wins deduplication. |
-| **ConflictReportGeneratorAgent** | Generates three audience-tailored reports (patient / care coordinator / physician) in a single Claude call using XML-delimited output; falls back to pre-templated reports on any parse failure so reports are never empty. |
-
-### Orchestration
-
-The three agents are composed into a **LangGraph `StateGraph`** with typed state (`AgentState`), conditional routing edges, and `interrupt_before` on the human-checkpoint node for MODERATE-severity cases. A `MemorySaver` checkpointer enables graph resumption after human review.
-
-Routing logic:
-- **CRITICAL** → `immediate_alert_node` → END  
-- **MODERATE** → `human_checkpoint_node` (suspends) → `report_generator_node` → END  
-- **NONE** → `safe_confirm_node` → END  
-- **Doctor mode / NONE** → `confirm_and_persist_node` → END
-
-### Memory Layer
-
-| Store | Technology | What is kept |
-|---|---|---|
-| Patient medications, conflicts, allergies | **Redis** (Upstash-compatible) | Per-patient JSON blobs; keys `patient:{id}:medications` etc. |
-| Pharmacovigilance literature | **ChromaDB** (local persistent) | 16 FDA interaction paragraphs chunked and embedded with `all-MiniLM-L6-v2`; queried by drug-pair at audit time |
-| Compliance audit trail | **SQLite** | Every node execution, human decision, and alert dispatch with severity label and state snapshot |
+- **ProfileBuilderAgent** — parses FHIR-lite JSON, normalises brand names to generics via a 60-entry synonym map, and writes the canonical medication list to Redis
+- **DrugInteractionAuditorAgent** — five-step pipeline: allergy check → deterministic rule engine (15 curated rules) → ChromaDB RAG retrieval → LLM semantic check for uncovered pairs → CRITICAL-wins deduplication
+- **ConflictReportGeneratorAgent** — generates three audience-tailored reports (patient / care coordinator / physician) in a single LLM call using XML-delimited output; pre-templated fallback ensures reports are never empty
+- **LangGraph StateGraph** — typed `AgentState`, conditional routing (`CRITICAL` → immediate alert, `MODERATE` → `interrupt_before` human checkpoint, `NONE` → safe confirm), `MemorySaver` checkpointer enables graph resumption after human review
+- **Memory layer** — Redis (medications / conflicts / allergies per patient), ChromaDB (16 FDA interaction paragraphs embedded with `all-MiniLM-L6-v2`), SQLite (compliance audit trail with severity index for every node execution)
 
 ---
 
@@ -93,7 +42,7 @@ Routing logic:
 | Layer | Technology |
 |---|---|
 | **Agent Framework** | LangGraph 0.1 (`StateGraph`, `MemorySaver`, `interrupt_before`) |
-| **LLM** | Anthropic Claude (`claude-sonnet-4-6`) via `anthropic` SDK; tenacity retry (3×, exponential 2–16 s) |
+| **LLM** | Configurable via `LLM_PROVIDER` env var: Google Gemini, Groq, Cerebras, or Ollama; tenacity retry (3×, exponential 2–16 s) |
 | **Patient Memory** | Redis / Upstash (`redis-py 5`) |
 | **Knowledge RAG** | ChromaDB 0.5 + `sentence-transformers` (`all-MiniLM-L6-v2`) |
 | **API** | FastAPI 0.111 + Uvicorn; WebSocket per-patient broadcast for real-time agent trace |
@@ -128,11 +77,57 @@ Results are printed to the terminal and saved to `evaluation/results/eval_report
 # Unit tests only (no live services needed)
 pytest tests/test_profile_builder.py tests/test_interaction_auditor.py tests/test_report_generator.py -v
 
-# Integration tests (requires Redis + ChromaDB; Claude is mocked)
+# Integration tests (requires Redis + ChromaDB; LLM is mocked)
 pytest tests/test_integration.py -v -m integration
 ```
 
-53 unit tests cover: brand normalisation, allergy detection, rule engine, Claude mock (MODERATE/NONE/failure paths), XML report parsing, fallback behaviour, and the full LangGraph pipeline on `patient_001`.
+53 unit tests cover: brand normalisation, allergy detection, rule engine, LLM mock (MODERATE/NONE/failure paths), XML report parsing, fallback behaviour, and the full LangGraph pipeline on `patient_001`.
+
+---
+
+## Demo Walkthrough
+
+### Step 1 — Scan a High-Risk Patient
+
+POST to `/api/patient/scan` with the contents of `data/mock_patients/patient_002.json` (Priya Krishnamurthy — Warfarin + Aspirin) via the FastAPI Swagger UI at `http://localhost:8080/docs` or the React UI at `http://localhost:3000`.
+
+**What to look for:** `overall_severity: "CRITICAL"`, a conflict entry for `Warfarin + Aspirin` (rule IR-001, major bleeding risk), and three populated reports (patient / coordinator / physician). The WebSocket trace in the UI shows each agent node completing in real time.
+
+### Step 2 — Test Brand-Name Normalisation
+
+POST `/api/patient/scan` with `data/mock_patients/patient_006.json` (Meena Pillai — prescribed "Brufen" by one doctor and Lisinopril by another).
+
+**What to look for:** the `medications` array shows `drug_name: "Brufen"` with `generic_name: "Ibuprofen"` and `is_normalised: true`. The conflict `Lisinopril + Ibuprofen` (IR-003) is detected even though the prescription used the brand name — without normalisation this interaction would be silently missed.
+
+### Step 3 — Run the Evaluation Suite
+
+```bash
+python evaluation/eval_runner.py
+```
+
+**What to look for:** Critical Recall = **100%**, Normalisation Accuracy = **100%**, conflict F1 score, and all 6 patients with audit entries in the results table.
+
+---
+
+## Commenting Convention
+
+Three structured comment types are used throughout the codebase:
+
+- `# NOTE:` — a non-obvious invariant or constraint a reader must know (e.g. `# NOTE: Redis stores JSON strings — deserialise on every read`)
+- `# WHY:` — a design decision that would otherwise look arbitrary (e.g. `# WHY: CRITICAL severity bypasses human checkpoint — patient safety rule`)
+- `# [REFS: file.py > function]` — a cross-file dependency callout linking the current code to the implementation it relies on
+
+---
+
+## Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| LangGraph over raw function calls | Explicit typed state, conditional routing, and `interrupt_before` HITL without boilerplate async plumbing |
+| Separate rule engine + LLM | Deterministic rules catch known critical interactions with zero latency and no token cost; LLM handles novel or ambiguous pairs the rules don't cover |
+| XML-delimited three-report output | Single LLM call for three audiences; regex extraction is more robust than JSON parsing for long prose; fallback templates guarantee non-empty output |
+| Brand → generic normalisation before matching | Drug pair matching would silently miss interactions if one prescription used a brand name; the 60-entry synonym map covers the most common trade names |
+| SQLite audit log (separate from Redis) | Compliance trail must survive Redis eviction and be queryable by severity; SQLite gives durable indexed storage with no extra service dependency |
 
 ---
 
@@ -143,8 +138,8 @@ polypharmacy-agent/
 │
 ├── agents/
 │   ├── profile_builder.py       # Agent 1 — FHIR parse, brand normalise, Redis write
-│   ├── interaction_auditor.py   # Agent 2 — allergy + rule + RAG + Claude pipeline
-│   └── report_generator.py      # Agent 3 — 3-audience reports via XML-tagged Claude
+│   ├── interaction_auditor.py   # Agent 2 — allergy + rule + RAG + LLM pipeline
+│   └── report_generator.py      # Agent 3 — 3-audience reports via XML-tagged LLM
 │
 ├── graph/
 │   └── safety_graph.py          # LangGraph StateGraph, nodes, edges, public run_*_flow()
@@ -162,8 +157,9 @@ polypharmacy-agent/
 │   └── audit_logger.py          # SQLite audit log — every node event with severity
 │
 ├── api/
-│   └── main.py                  # FastAPI: POST /patient/scan, POST /doctor/check,
-│                                #           GET /patient/{id}/profile, WS /ws/{id}
+│   ├── main.py                  # FastAPI: POST /patient/scan, POST /doctor/check,
+│   │                            #          GET /patient/{id}/profile, WS /ws/{id}
+│   └── models.py                # Pydantic request and response models
 │
 ├── ui/
 │   ├── index.html               # React 18 + Tailwind CDN shell
@@ -182,16 +178,16 @@ polypharmacy-agent/
 │   └── eval_runner.py           # End-to-end eval: F1, critical recall, normalisation
 │
 ├── tests/
-│   ├── conftest.py
+│   ├── conftest.py              # Shared fixtures: FakeStore, make_drug, mock_redis
 │   ├── test_profile_builder.py  # 15 unit tests (mock Redis)
-│   ├── test_interaction_auditor.py  # 21 unit tests (mock ChromaDB + Claude)
-│   ├── test_report_generator.py     # 17 unit tests (mock Claude)
+│   ├── test_interaction_auditor.py  # 21 unit tests (mock ChromaDB + LLM)
+│   ├── test_report_generator.py     # 17 unit tests (mock LLM)
 │   └── test_integration.py          # 8 integration tests (real Redis + ChromaDB)
 │
 ├── .env.example
 ├── requirements.txt
 ├── pytest.ini
-└── setup_check.py               # Pre-flight: Redis ping, ChromaDB, Anthropic, embeddings
+└── setup_check.py               # Pre-flight: Redis ping, ChromaDB, embeddings
 ```
 
 ---
@@ -206,52 +202,11 @@ cp .env.example .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
+| `LLM_PROVIDER` | Yes | `gemini` \| `groq` \| `cerebras` \| `ollama` |
 | `UPSTASH_REDIS_URL` | Yes* | Full `rediss://` URL from Upstash console |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_SSL` | Yes* | Alternative to `UPSTASH_REDIS_URL` for split config |
 | `CHROMA_PERSIST_DIR` | Yes | Local path for ChromaDB storage (default: `./data/chromadb`) |
-| `CLAUDE_MODEL` | No | Model ID (default: `claude-sonnet-4-6`) |
 | `LLM_MAX_RETRIES` | No | Tenacity retry count (default: `3`) |
 | `LOG_LEVEL` | No | `INFO` \| `DEBUG` \| `WARNING` |
 
 \* Supply either `UPSTASH_REDIS_URL` **or** the four split variables — not both.
-
----
-
-## Demo Walkthrough
-
-Follow these three steps to demonstrate the system end-to-end in an interview:
-
-### Step 1 — Scan a High-Risk Patient
-
-Open `http://localhost:8000/docs` (FastAPI Swagger UI) or use the React UI at `http://localhost:3000`.
-
-POST to `/api/patient/scan` with the contents of `data/mock_patients/patient_002.json` (Priya Krishnamurthy — Warfarin + Aspirin).
-
-**What to look for:** `overall_severity: "CRITICAL"`, a conflict entry for `Warfarin + Aspirin` (rule IR-001, major bleeding risk), and three populated reports (patient / coordinator / physician). The WebSocket trace in the UI shows each agent node completing in real time.
-
-### Step 2 — Test Brand-Name Normalisation
-
-POST `/api/patient/scan` with `data/mock_patients/patient_006.json` (Meena Pillai — prescribed "Brufen" by one doctor and Lisinopril by another).
-
-**What to look for:** the `medications` array in the response shows `drug_name: "Brufen"` with `generic_name: "Ibuprofen"` and `is_normalised: true`. The conflict `Lisinopril + Ibuprofen` (IR-003) is detected even though the prescription used the brand name. Without normalisation this interaction would be silently missed.
-
-### Step 3 — Run the Evaluation Suite
-
-```bash
-python evaluation/eval_runner.py
-```
-
-**What to look for:** the terminal report showing Critical Recall = **100%** (patient-002 CRITICAL correctly identified), Normalisation Accuracy = **100%** (patient-006 Brufen resolved), conflict F1 score, and all 6 patients with audit entries. The report is also saved to `evaluation/results/eval_report.txt`.
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| LangGraph over raw function calls | Explicit typed state, conditional routing, and `interrupt_before` HITL without boilerplate async plumbing |
-| Separate rule engine + Claude | Deterministic rules catch known critical interactions with zero latency and no token cost; Claude handles novel or ambiguous pairs the rules don't cover |
-| XML-delimited three-report output | Single LLM call for three audiences; regex extraction is more robust than JSON parsing for long prose; fallback templates guarantee non-empty output |
-| Brand → generic normalisation before matching | Drug pair matching would silently miss interactions if one prescription used a brand name; the 60-entry synonym map covers the most common trade names |
-| SQLite audit log (separate from Redis) | Compliance trail must survive Redis eviction and be queryable by severity; SQLite gives durable indexed storage with no extra service dependency |
