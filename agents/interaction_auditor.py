@@ -1,31 +1,22 @@
+# Agent: DrugInteractionAuditorAgent
+# Role:  Detect drug-drug and drug-allergy interactions via rules + LLM.
+# Input: patient_id, medications, skip_audit
+# Output: patient_id, conflicts, overall_severity, status, error
+
 """
 Agent 2 — DrugInteractionAuditorAgent
 
 Pipeline (5 steps):
-  1. Allergy check   — any active drug matching a known allergy → CRITICAL immediately
-  2. Rule engine     — deterministic check of all pairs against interaction_rules.json
-  3. Claude check    — for pairs NOT already flagged by rules, query ChromaDB then
-                       ask Claude to classify: MODERATE or NONE
-  4. Merge           — deduplicate pairs; CRITICAL wins over MODERATE
-  5. Persist         — write consolidated conflicts to Redis patient:{id}:conflicts
+  1. Allergy check   — any active drug matching a known allergy → CRITICAL
+  2. Rule engine     — deterministic check of all pairs via interaction_rules.json
+  3. LLM check       — unflagged pairs queried through ChromaDB then LLM
+  4. Merge           — deduplicate; CRITICAL wins over MODERATE for same pair
+  5. Persist         — write consolidated conflicts to Redis
 
-LangGraph integration:
+LangGraph integration::
+
     from agents.interaction_auditor import run_agent as audit_interactions
     graph.add_node("interaction_auditor", audit_interactions)
-
-State contract
---------------
-Input (from profile_builder output or equivalent):
-    patient_id      str
-    medications     List[dict]   serialised Drug dicts
-    skip_audit      bool         if True, returns immediately with no conflicts
-
-Output (always present):
-    patient_id      str
-    conflicts       List[dict]
-    overall_severity  str   "CRITICAL" | "MODERATE" | "NONE"
-    status          str   "OK" | "SKIPPED" | "ERROR"
-    error           str | None
 """
 
 from __future__ import annotations
@@ -46,27 +37,28 @@ from tools.rule_engine import check_pairs, check_pairs_all_severity
 from memory.patient_store import PatientStore, _dict_to_drug
 from memory.knowledge_store import KnowledgeStore
 
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+MAX_RETRIES       = 3
+SEVERITY_CRITICAL = "CRITICAL"
+SEVERITY_MODERATE = "MODERATE"
+SEVERITY_NONE     = "NONE"
+
+KEY_PATIENT_ID       = "patient_id"
+KEY_MEDICATIONS      = "medications"
+KEY_CONFLICTS        = "conflicts"
+KEY_OVERALL_SEVERITY = "overall_severity"
+KEY_STATUS           = "status"
+KEY_ERROR            = "error"
+KEY_SKIP_AUDIT       = "skip_audit"
+KEY_MODE             = "mode"
+
 _SYNONYMS_PATH = Path(__file__).parent.parent / "data" / "drug_synonyms.json"
 
-# ── Tenacity-wrapped Claude call ──────────────────────────────────────────────
+# ── Prompt ─────────────────────────────────────────────────────────────────────
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=16),
-    reraise=True,
-)
-def _call_claude(prompt: str) -> str:
-    """Call the configured LLM and return the raw text response. Retried up to 3 times."""
-    llm = get_llm()
-    response = llm.invoke([HumanMessage(content=prompt)])
-    return response.content.strip()
-
-
-# ── Prompt builder ────────────────────────────────────────────────────────────
-
-def _build_claude_prompt(drug_a: str, drug_b: str, context_chunks: list[str]) -> str:
-    context = "\n\n".join(context_chunks) if context_chunks else "No specific literature found."
-    return f"""You are a clinical pharmacist reviewing a potential drug interaction.
+AUDIT_PROMPT = """\
+You are a clinical pharmacist reviewing a potential drug interaction.
 
 Drug A: {drug_a}
 Drug B: {drug_b}
@@ -89,13 +81,27 @@ Rules:
 """
 
 
-# ── Step 1: Allergy check ─────────────────────────────────────────────────────
+# ── LLM call ──────────────────────────────────────────────────────────────────
 
-def _check_allergies(
-    drugs: list[Drug],
-    allergies: list[Any],
-) -> list[dict]:
-    """Return CRITICAL conflicts for any drug matching a known allergy."""
+# Retries 3x with exponential backoff on API rate limits
+@retry(
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=1, min=2, max=16),
+    reraise=True,
+)
+def _call_llm(prompt: str) -> str:
+    """Call the configured LLM and return the raw text response."""
+    # [REFS: llm_config.py > get_llm]
+    # NOTE: LangChain .invoke() returns AIMessage — use .content for string.
+    llm = get_llm()
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return response.content.strip()
+
+
+# ── Step 1: Allergy check ──────────────────────────────────────────────────────
+
+def _check_allergies(drugs: list[Drug], allergies: list[Any]) -> list[dict]:
+    """Return CRITICAL conflicts for any active drug matching a known allergy."""
     conflicts: list[dict] = []
     allergy_substances: list[str] = []
 
@@ -117,101 +123,99 @@ def _check_allergies(
                         reaction = a.get("reaction", "")
                 conflicts.append(
                     {
-                        "conflict_type": "ALLERGY",
-                        "severity": "CRITICAL",
-                        "drug_a": drug.generic_name,
-                        "drug_b": substance,
-                        "rule_id": "ALLERGY_CHECK",
+                        "conflict_type":         "ALLERGY",
+                        "severity":              SEVERITY_CRITICAL,
+                        "drug_a":                drug.generic_name,
+                        "drug_b":                substance,
+                        "rule_id":               "ALLERGY_CHECK",
                         "mechanism": (
                             f"Patient has a documented allergy to {substance}"
                             + (f" (reaction: {reaction})" if reaction else "")
                             + f". {drug.generic_name} matches or cross-reacts with this allergen."
                         ),
-                        "clinical_effects": [reaction] if reaction else ["allergic reaction"],
-                        "monitoring": "Do not administer. Consult prescribing physician immediately.",
+                        "clinical_effects":      [reaction] if reaction else ["allergic reaction"],
+                        "monitoring":            "Do not administer. Consult prescribing physician immediately.",
                         "suggested_alternative": "Use a structurally unrelated drug. Review full allergy history.",
-                        "source": "allergy_check",
+                        "source":                "allergy_check",
                     }
                 )
     return conflicts
 
 
-# ── Step 3: Claude semantic check ─────────────────────────────────────────────
+# ── Step 3: LLM semantic check ─────────────────────────────────────────────────
 
-def _claude_check_unflagged_pairs(
+def _llm_check_unflagged_pairs(
     drugs: list[Drug],
     flagged_pairs: set[frozenset],
     knowledge_store: KnowledgeStore,
 ) -> list[dict]:
-    """
-    For every active pair NOT already flagged by rules, ask ChromaDB + Claude
-    whether an interaction exists. Returns only MODERATE results (NONE discarded).
-    """
-    active = [d for d in drugs if d.active_status]
+    """Query ChromaDB + LLM for pairs not covered by the rule engine."""
+    active    = [d for d in drugs if d.active_status]
     conflicts: list[dict] = []
 
     for drug_a, drug_b in combinations(active, 2):
         pair_key = frozenset({drug_a.generic_name.lower(), drug_b.generic_name.lower()})
         if pair_key in flagged_pairs:
-            continue  # already handled by rule engine
+            continue
 
         query = f"{drug_a.generic_name} {drug_b.generic_name} interaction"
         try:
+            # [REFS: memory/knowledge_store.py > query]
             chunks = knowledge_store.query(query, n_results=3)
         except Exception:
             chunks = []
 
-        prompt = _build_claude_prompt(drug_a.generic_name, drug_b.generic_name, chunks)
+        context = "\n\n".join(chunks) if chunks else "No specific literature found."
+        prompt  = AUDIT_PROMPT.format(
+            drug_a=drug_a.generic_name,
+            drug_b=drug_b.generic_name,
+            context=context,
+        )
 
         try:
-            raw = _call_claude(prompt)
-            # Strip markdown code fences if Claude wraps the JSON
-            raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            result = json.loads(raw)
-            severity = result.get("severity", "NONE").upper()
+            # [REFS: llm_config.py > get_llm]
+            raw       = _call_llm(prompt)
+            raw       = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            result    = json.loads(raw)
+            severity  = result.get("severity", SEVERITY_NONE).upper()
             mechanism = result.get("mechanism") or ""
         except Exception as exc:
-            # Treat parse/API failures as NONE to avoid false positives
-            severity = "NONE"
-            mechanism = f"[Claude check failed: {exc}]"
+            severity  = SEVERITY_NONE
+            mechanism = f"[LLM check failed: {exc}]"
 
-        if severity == "MODERATE":
+        if severity == SEVERITY_MODERATE:
             conflicts.append(
                 {
-                    "conflict_type": "DRUG_DRUG",
-                    "severity": "MODERATE",
-                    "drug_a": drug_a.generic_name,
-                    "drug_b": drug_b.generic_name,
-                    "matched_drug_a": drug_a.generic_name,
-                    "matched_drug_b": drug_b.generic_name,
-                    "rule_id": None,
-                    "mechanism": mechanism,
-                    "clinical_effects": [],
-                    "monitoring": "Monitor clinically; review with prescribing physician.",
+                    "conflict_type":         "DRUG_DRUG",
+                    "severity":              SEVERITY_MODERATE,
+                    "drug_a":                drug_a.generic_name,
+                    "drug_b":                drug_b.generic_name,
+                    "matched_drug_a":        drug_a.generic_name,
+                    "matched_drug_b":        drug_b.generic_name,
+                    "rule_id":               None,
+                    "mechanism":             mechanism,
+                    "clinical_effects":      [],
+                    "monitoring":            "Monitor clinically; review with prescribing physician.",
                     "suggested_alternative": "",
-                    "source": "claude",
+                    "source":                "llm",
                 }
             )
 
     return conflicts
 
 
-# ── Step 4: Merge & deduplicate ───────────────────────────────────────────────
+# ── Step 4: Merge & deduplicate ────────────────────────────────────────────────
 
 def _merge_conflicts(
     allergy_conflicts: list[dict],
     rule_conflicts: list[dict],
-    claude_conflicts: list[dict],
+    llm_conflicts: list[dict],
 ) -> list[dict]:
-    """
-    Combine all conflict sources, deduplicate by drug pair, and let CRITICAL
-    win over MODERATE for the same pair.
-    """
-    all_conflicts = allergy_conflicts + rule_conflicts + claude_conflicts
+    """Combine all sources; CRITICAL wins over MODERATE for the same drug pair."""
+    all_conflicts = allergy_conflicts + rule_conflicts + llm_conflicts
 
-    # Key: frozenset of the two drug names (lower-case)
     best: dict[frozenset, dict] = {}
-    severity_rank = {"CRITICAL": 2, "MODERATE": 1, "NONE": 0}
+    severity_rank = {SEVERITY_CRITICAL: 2, SEVERITY_MODERATE: 1, SEVERITY_NONE: 0}
 
     for c in all_conflicts:
         pair_key = frozenset(
@@ -229,103 +233,89 @@ def _merge_conflicts(
     return list(best.values())
 
 
-# ── Step 5: Overall severity ──────────────────────────────────────────────────
+# ── Step 5: Overall severity ───────────────────────────────────────────────────
 
 def _overall_severity(conflicts: list[dict]) -> str:
+    """Return the highest severity present across all conflicts."""
     severities = {c["severity"] for c in conflicts}
-    if "CRITICAL" in severities:
-        return "CRITICAL"
-    if "MODERATE" in severities:
-        return "MODERATE"
-    return "NONE"
+    if SEVERITY_CRITICAL in severities:
+        return SEVERITY_CRITICAL
+    if SEVERITY_MODERATE in severities:
+        return SEVERITY_MODERATE
+    return SEVERITY_NONE
 
 
-# ── LangGraph node ────────────────────────────────────────────────────────────
+# ── LangGraph node ─────────────────────────────────────────────────────────────
 
 def run_agent(
     state: dict,
     store: PatientStore | None = None,
     knowledge_store: KnowledgeStore | None = None,
-    anthropic_client: anthropic.Anthropic | None = None,
+    anthropic_client: Any = None,  # kept for backward-compat; unused
 ) -> dict:
-    """
-    LangGraph-compatible node function.
+    """Run the full 5-step interaction audit pipeline."""
+    patient_id: str = state.get(KEY_PATIENT_ID, "")
 
-    All dependencies (store, knowledge_store, anthropic_client) are injectable
-    for testing. In production they are constructed from environment variables.
-    """
-    patient_id: str = state.get("patient_id", "")
-
-    # ── Early exit ─────────────────────────────────────────────────────────────
-    if state.get("skip_audit"):
+    if state.get(KEY_SKIP_AUDIT):
         return {
-            "patient_id": patient_id,
-            "conflicts": [],
-            "overall_severity": "NONE",
-            "status": "SKIPPED",
-            "error": None,
+            KEY_PATIENT_ID:       patient_id,
+            KEY_CONFLICTS:        [],
+            KEY_OVERALL_SEVERITY: SEVERITY_NONE,
+            KEY_STATUS:           "SKIPPED",
+            KEY_ERROR:            None,
         }
 
-    medication_dicts: list[dict] = state.get("medications", [])
+    medication_dicts: list[dict] = state.get(KEY_MEDICATIONS, [])
     if not medication_dicts:
         return {
-            "patient_id": patient_id,
-            "conflicts": [],
-            "overall_severity": "NONE",
-            "status": "ERROR",
-            "error": "No medications in state — run profile_builder first.",
+            KEY_PATIENT_ID:       patient_id,
+            KEY_CONFLICTS:        [],
+            KEY_OVERALL_SEVERITY: SEVERITY_NONE,
+            KEY_STATUS:           "ERROR",
+            KEY_ERROR:            "No medications in state — run profile_builder first.",
         }
 
-    # ── Initialise dependencies ────────────────────────────────────────────────
     if store is None:
         store = PatientStore()
     if knowledge_store is None:
         knowledge_store = KnowledgeStore()
         knowledge_store.init()
 
-    # Deserialise drugs from state
     drugs: list[Drug] = [_dict_to_drug(d) for d in medication_dicts]
 
-    # ── Step 1: Allergy check ──────────────────────────────────────────────────
-    allergies = store.get_allergies(patient_id)
+    # Step 1 — allergy check
+    # [REFS: memory/patient_store.py > get_allergies]
+    allergies         = store.get_allergies(patient_id)
     allergy_conflicts = _check_allergies(drugs, allergies)
 
-    # ── Step 2: Rule engine (all severities to know which pairs are covered) ───
-    all_rule_conflicts = check_pairs_all_severity(drugs)
-    # Only CRITICAL ones go into final output directly
-    rule_conflicts = [c for c in all_rule_conflicts if c["severity"] == "CRITICAL"]
-    # MODERATE from rules also go into output
-    rule_moderate = [c for c in all_rule_conflicts if c["severity"] == "MODERATE"]
-    rule_conflicts_for_output = rule_conflicts + rule_moderate
-
-    # Track which pairs are already covered (by any rule severity)
+    # Step 2 — rule engine
+    all_rule_conflicts        = check_pairs_all_severity(drugs)
+    rule_conflicts_for_output = [
+        c for c in all_rule_conflicts
+        if c["severity"] in (SEVERITY_CRITICAL, SEVERITY_MODERATE)
+    ]
     flagged_pairs: set[frozenset] = {
-        frozenset(
-            {
-                c["matched_drug_a"].lower(),
-                c["matched_drug_b"].lower(),
-            }
-        )
+        frozenset({c["matched_drug_a"].lower(), c["matched_drug_b"].lower()})
         for c in all_rule_conflicts
     }
 
-    # ── Step 3: Claude semantic check for uncovered pairs ─────────────────────
-    claude_conflicts = _claude_check_unflagged_pairs(
-        drugs, flagged_pairs, knowledge_store
-    )
+    # Step 3 — LLM check for uncovered pairs
+    llm_conflicts = _llm_check_unflagged_pairs(drugs, flagged_pairs, knowledge_store)
 
-    # ── Step 4: Merge ──────────────────────────────────────────────────────────
-    merged = _merge_conflicts(allergy_conflicts, rule_conflicts_for_output, claude_conflicts)
+    # Step 4 — merge
+    merged = _merge_conflicts(allergy_conflicts, rule_conflicts_for_output, llm_conflicts)
 
-    # ── Step 5: Persist & return ───────────────────────────────────────────────
+    # Step 5 — persist
+    # [REFS: memory/patient_store.py > save_conflicts]
     store.save_conflicts(patient_id, merged)
 
+    # WHY: CRITICAL severity bypasses human checkpoint — patient safety rule.
     return {
-        "patient_id": patient_id,
-        "conflicts": merged,
-        "overall_severity": _overall_severity(merged),
-        "status": "OK",
-        "error": None,
+        KEY_PATIENT_ID:       patient_id,
+        KEY_CONFLICTS:        merged,
+        KEY_OVERALL_SEVERITY: _overall_severity(merged),
+        KEY_STATUS:           "OK",
+        KEY_ERROR:            None,
     }
 
 
@@ -333,7 +323,6 @@ def run_agent(
 
 if __name__ == "__main__":
     import sys
-    from pathlib import Path
     from dotenv import load_dotenv
 
     load_dotenv(Path(__file__).parent.parent / ".env")
@@ -341,7 +330,7 @@ if __name__ == "__main__":
     from agents.profile_builder import run_agent as build_profile
 
     project_root = Path(__file__).parent.parent
-    store = PatientStore()
+    store        = PatientStore()
 
     try:
         store._r.ping()
@@ -354,74 +343,65 @@ if __name__ == "__main__":
     knowledge_store.init()
     print(f"[PASS] ChromaDB knowledge store ({knowledge_store.document_count} chunks)\n")
 
-    # ── Test A: patient_001 (Arjun — multi-doctor, 4 drugs, expect MODERATE) ──
+    # ── Test A: patient_001 ────────────────────────────────────────────────────
     print("=" * 60)
     print("TEST A: patient_001 — Arjun Sharma (4 drugs, expect MODERATE)")
     print("=" * 60)
 
     p1_file = project_root / "data" / "mock_patients" / "patient_001.json"
-    with open(p1_file, "r", encoding="utf-8") as fh:
+    with open(p1_file, encoding="utf-8") as fh:
         p1_json = json.load(fh)
 
     patient_id_1 = p1_json["id"]
     store.delete_patient(patient_id_1)
 
     profile_state = build_profile(
-        {"mode": "patient", "patient_id": patient_id_1, "patient_json": p1_json},
+        {KEY_MODE: "patient", KEY_PATIENT_ID: patient_id_1, "patient_json": p1_json},
         store=store,
     )
-    assert profile_state["status"] == "OK", f"Profile build failed: {profile_state}"
+    assert profile_state[KEY_STATUS] == "OK", f"Profile build failed: {profile_state}"
 
-    audit_state = run_agent(
-        profile_state,
-        store=store,
-        knowledge_store=knowledge_store,
-    )
+    audit_state = run_agent(profile_state, store=store, knowledge_store=knowledge_store)
 
-    print(f"  overall_severity : {audit_state['overall_severity']}")
-    print(f"  conflicts found  : {len(audit_state['conflicts'])}")
-    for c in audit_state["conflicts"]:
+    print(f"  overall_severity : {audit_state[KEY_OVERALL_SEVERITY]}")
+    print(f"  conflicts found  : {len(audit_state[KEY_CONFLICTS])}")
+    for c in audit_state[KEY_CONFLICTS]:
         src = c.get("rule_id") or c.get("source", "?")
         print(f"    [{c['severity']:8s}] {c['drug_a']} + {c['drug_b']}  [{src}]")
-    assert audit_state["status"] == "OK"
-    assert audit_state["overall_severity"] in ("MODERATE", "CRITICAL")
-    assert len(audit_state["conflicts"]) >= 1
+    assert audit_state[KEY_STATUS] == "OK"
+    assert audit_state[KEY_OVERALL_SEVERITY] in (SEVERITY_MODERATE, SEVERITY_CRITICAL)
+    assert len(audit_state[KEY_CONFLICTS]) >= 1
     print("  [PASS]\n")
 
-    # ── Test B: patient_005 (Kumar — single drug, expect NONE / SKIPPED) ──────
+    # ── Test B: patient_005 ────────────────────────────────────────────────────
     print("=" * 60)
     print("TEST B: patient_005 — Kumar Nair (1 drug, expect SKIPPED/NONE)")
     print("=" * 60)
 
     p5_file = project_root / "data" / "mock_patients" / "patient_005.json"
-    with open(p5_file, "r", encoding="utf-8") as fh:
+    with open(p5_file, encoding="utf-8") as fh:
         p5_json = json.load(fh)
 
     patient_id_5 = p5_json["id"]
     store.delete_patient(patient_id_5)
 
     profile_state_5 = build_profile(
-        {"mode": "patient", "patient_id": patient_id_5, "patient_json": p5_json},
+        {KEY_MODE: "patient", KEY_PATIENT_ID: patient_id_5, "patient_json": p5_json},
         store=store,
     )
-    assert profile_state_5["status"] == "OK"
-    assert profile_state_5["skip_audit"] is True, "Expected skip_audit=True for single-drug patient"
+    assert profile_state_5[KEY_STATUS] == "OK"
+    assert profile_state_5[KEY_SKIP_AUDIT] is True
 
-    audit_state_5 = run_agent(
-        profile_state_5,
-        store=store,
-        knowledge_store=knowledge_store,
-    )
+    audit_state_5 = run_agent(profile_state_5, store=store, knowledge_store=knowledge_store)
 
-    print(f"  status           : {audit_state_5['status']}")
-    print(f"  overall_severity : {audit_state_5['overall_severity']}")
-    print(f"  conflicts found  : {len(audit_state_5['conflicts'])}")
-    assert audit_state_5["status"] == "SKIPPED"
-    assert audit_state_5["overall_severity"] == "NONE"
-    assert len(audit_state_5["conflicts"]) == 0
+    print(f"  status           : {audit_state_5[KEY_STATUS]}")
+    print(f"  overall_severity : {audit_state_5[KEY_OVERALL_SEVERITY]}")
+    print(f"  conflicts found  : {len(audit_state_5[KEY_CONFLICTS])}")
+    assert audit_state_5[KEY_STATUS] == "SKIPPED"
+    assert audit_state_5[KEY_OVERALL_SEVERITY] == SEVERITY_NONE
+    assert len(audit_state_5[KEY_CONFLICTS]) == 0
     print("  [PASS]\n")
 
-    # Cleanup
     store.delete_patient(patient_id_1)
     store.delete_patient(patient_id_5)
     print("All DrugInteractionAuditorAgent tests passed.")

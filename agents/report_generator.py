@@ -1,34 +1,18 @@
+# Agent: ConflictReportGeneratorAgent
+# Role:  Generate patient, coordinator, and physician reports from detected conflicts.
+# Input: patient_id, conflicts, overall_severity, patient_name
+# Output: patient_id, reports, overall_severity, status, error
+
 """
 Agent 3 — ConflictReportGeneratorAgent
 
-Takes the merged conflict list from the interaction auditor and generates
-three tailored reports in a single Claude call:
-  - patient     : plain-language, action-oriented
-  - coordinator : structured action plan for care coordinators / pharmacists
-  - physician   : full clinical detail with mechanisms and alternatives
+Generates three tailored reports in a single LLM call, delimited by XML tags.
+Falls back to pre-templated reports on any parse or API failure.
 
-A combined prompt wraps all three instructions and asks Claude to delimit
-each report with XML tags. The response is parsed with regex; on any failure
-the pre-templated fallback from report_formatter is used instead.
+LangGraph integration::
 
-LangGraph integration:
     from agents.report_generator import run_agent as generate_reports
     graph.add_node("report_generator", generate_reports)
-
-State contract
---------------
-Input (from interaction_auditor output or equivalent):
-    patient_id        str
-    conflicts         List[dict]
-    overall_severity  str    "CRITICAL" | "MODERATE" | "NONE"
-    patient_name      str    optional — used in coordinator and physician reports
-
-Output (always present — never empty):
-    patient_id        str
-    reports           dict   {patient, coordinator, physician, fallback_used}
-    overall_severity  str    passed through unchanged
-    status            str    "OK" | "FALLBACK" | "SKIPPED" | "ERROR"
-    error             str | None
 """
 
 from __future__ import annotations
@@ -53,7 +37,22 @@ from tools.report_formatter import (
 )
 from memory.patient_store import PatientStore
 
-# ── XML tag regex ──────────────────────────────────────────────────────────────
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+MAX_RETRIES       = 3
+SEVERITY_CRITICAL = "CRITICAL"
+SEVERITY_MODERATE = "MODERATE"
+SEVERITY_NONE     = "NONE"
+
+KEY_PATIENT_ID       = "patient_id"
+KEY_CONFLICTS        = "conflicts"
+KEY_OVERALL_SEVERITY = "overall_severity"
+KEY_STATUS           = "status"
+KEY_ERROR            = "error"
+KEY_REPORTS          = "reports"
+KEY_PATIENT_NAME     = "patient_name"
+
+# ── XML tag patterns ───────────────────────────────────────────────────────────
 
 _TAG_RE = {
     "patient": re.compile(
@@ -67,31 +66,10 @@ _TAG_RE = {
     ),
 }
 
+# ── Prompts ────────────────────────────────────────────────────────────────────
 
-# ── Tenacity-wrapped Claude call ──────────────────────────────────────────────
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=16),
-    reraise=True,
-)
-def _call_claude(prompt: str) -> str:
-    llm = get_llm()
-    response = llm.invoke([HumanMessage(content=prompt)])
-    return response.content.strip()
-
-
-# ── Combined prompt builder ───────────────────────────────────────────────────
-
-def _build_combined_prompt(
-    conflicts: list[dict],
-    patient_name: str,
-) -> str:
-    patient_section = build_patient_prompt(conflicts)
-    coordinator_section = build_coordinator_prompt(conflicts, patient_name)
-    physician_section = build_physician_prompt(conflicts, patient_name)
-
-    return f"""You must produce THREE separate reports for the same set of drug interaction findings.
+REPORT_COMBINED_WRAPPER = """\
+You must produce THREE separate reports for the same set of drug interaction findings.
 Each report is for a different audience. Write all three in a single response.
 
 Wrap each report in the exact XML tags shown — no extra text outside the tags:
@@ -117,27 +95,8 @@ Important:
 - Each report should be self-contained — the reader sees only their own report.
 """
 
-
-# ── XML parser ────────────────────────────────────────────────────────────────
-
-def _parse_xml_reports(raw: str) -> dict | None:
-    """
-    Extract the three reports from Claude's XML-delimited response.
-    Returns None if any tag is missing.
-    """
-    results: dict[str, str] = {}
-    for role, pattern in _TAG_RE.items():
-        match = pattern.search(raw)
-        if not match:
-            return None
-        results[role] = match.group(1).strip()
-    return results
-
-
-# ── No-conflict safe reports ──────────────────────────────────────────────────
-
-def _build_safe_confirmation_prompt(patient_name: str) -> str:
-    return f"""You must produce THREE separate safety confirmation messages for patient: {patient_name}.
+REPORT_SAFE_CONFIRMATION = """\
+You must produce THREE separate safety confirmation messages for patient: {patient_name}.
 No drug interactions were detected in their current medication list.
 
 Wrap each message in the exact XML tags — no extra text outside the tags:
@@ -163,92 +122,122 @@ Do not include any text outside the three XML tag pairs.
 """
 
 
+# ── LLM call ──────────────────────────────────────────────────────────────────
+
+# Retries 3x with exponential backoff on API rate limits
+@retry(
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=1, min=2, max=16),
+    reraise=True,
+)
+def _call_llm(prompt: str) -> str:
+    """Call the configured LLM and return the raw text response."""
+    # [REFS: llm_config.py > get_llm]
+    # NOTE: LangChain .invoke() returns AIMessage — use .content for string.
+    llm = get_llm()
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return response.content.strip()
+
+
+# ── Prompt builders ────────────────────────────────────────────────────────────
+
+def _build_combined_prompt(conflicts: list[dict], patient_name: str) -> str:
+    """Build the three-audience combined prompt for conflict cases."""
+    return REPORT_COMBINED_WRAPPER.format(
+        patient_section=build_patient_prompt(conflicts),
+        coordinator_section=build_coordinator_prompt(conflicts, patient_name),
+        physician_section=build_physician_prompt(conflicts, patient_name),
+    )
+
+
+def _build_safe_prompt(patient_name: str) -> str:
+    """Build the safe-confirmation prompt for no-conflict cases."""
+    return REPORT_SAFE_CONFIRMATION.format(patient_name=patient_name)
+
+
+# ── XML parser ─────────────────────────────────────────────────────────────────
+
+def _parse_xml_reports(raw: str) -> dict | None:
+    """Extract three reports from XML-delimited LLM response; None if any tag missing."""
+    results: dict[str, str] = {}
+    for role, pattern in _TAG_RE.items():
+        match = pattern.search(raw)
+        if not match:
+            return None
+        results[role] = match.group(1).strip()
+    return results
+
+
 # ── LangGraph node ─────────────────────────────────────────────────────────────
 
 def run_agent(
     state: dict,
     store: PatientStore | None = None,
-    anthropic_client: anthropic.Anthropic | None = None,
+    anthropic_client: Any = None,  # kept for backward-compat; unused
 ) -> dict:
-    """
-    LangGraph-compatible node function.
-
-    Produces reports dict: {patient, coordinator, physician, fallback_used}.
-    Never returns an empty report — fallback templates are used on any failure.
-    """
-    patient_id: str = state.get("patient_id", "")
-    conflicts: list[dict] = state.get("conflicts", [])
-    overall_severity: str = state.get("overall_severity", "NONE")
-    patient_name: str = state.get("patient_name", f"Patient {patient_id}")
+    """Generate patient, coordinator, and physician reports; never returns empty reports."""
+    patient_id: str       = state.get(KEY_PATIENT_ID, "")
+    conflicts: list[dict] = state.get(KEY_CONFLICTS, [])
+    overall_severity: str = state.get(KEY_OVERALL_SEVERITY, SEVERITY_NONE)
+    patient_name: str     = state.get(KEY_PATIENT_NAME, f"Patient {patient_id}")
 
     if store is None:
         store = PatientStore()
 
-    # ── Sort conflicts: CRITICAL first ─────────────────────────────────────────
-    rank = {"CRITICAL": 0, "MODERATE": 1}
-    sorted_conflicts = sorted(
-        conflicts, key=lambda c: rank.get(c.get("severity", "MODERATE"), 1)
+    rank = {SEVERITY_CRITICAL: 0, SEVERITY_MODERATE: 1}
+    sorted_conflicts = sorted(conflicts, key=lambda c: rank.get(c.get("severity", SEVERITY_MODERATE), 1))
+
+    prompt = (
+        _build_safe_prompt(patient_name)
+        if not sorted_conflicts
+        else _build_combined_prompt(sorted_conflicts, patient_name)
     )
 
-    # ── Build prompt (no-conflict path uses a different prompt) ────────────────
-    if not sorted_conflicts:
-        prompt = _build_safe_confirmation_prompt(patient_name)
-    else:
-        prompt = _build_combined_prompt(sorted_conflicts, patient_name)
-
-    # ── Single Claude call ─────────────────────────────────────────────────────
-    raw_response: str = ""
-    claude_error: str | None = None
+    # [REFS: llm_config.py > get_llm]
+    raw_response: str    = ""
+    llm_error: str | None = None
     try:
-        raw_response = _call_claude(prompt)
+        raw_response = _call_llm(prompt)
     except Exception as exc:
-        claude_error = str(exc)
+        llm_error = str(exc)
 
-    # ── Parse XML tags ─────────────────────────────────────────────────────────
     reports: dict | None = None
     if raw_response:
         reports = _parse_xml_reports(raw_response)
 
-    fallback_used = False
     if reports is None:
-        # Log parse failure to audit
-        if claude_error or not raw_response:
-            reason = claude_error or "empty response"
-        else:
-            reason = "XML tags missing or malformed in Claude response"
+        reason = llm_error or ("empty response" if not raw_response else "XML tags missing or malformed")
 
         store._audit(
             patient_id,
             "report_generator:fallback_used",
             {"reason": reason, "raw_preview": raw_response[:200] if raw_response else ""},
         )
-        reports = build_fallback_report(sorted_conflicts)
-        fallback_used = True
-        status = "FALLBACK"
-        error = reason
+        reports      = build_fallback_report(sorted_conflicts)
+        status       = "FALLBACK"
+        error        = reason
     else:
         reports["fallback_used"] = False
-        fallback_used = False
         status = "OK"
-        error = None
+        error  = None
 
     store._audit(
         patient_id,
         "report_generator:complete",
         {
-            "status": status,
-            "overall_severity": overall_severity,
-            "conflict_count": len(sorted_conflicts),
-            "fallback_used": fallback_used,
+            KEY_STATUS:           status,
+            KEY_OVERALL_SEVERITY: overall_severity,
+            "conflict_count":     len(sorted_conflicts),
+            "fallback_used":      (status == "FALLBACK"),
         },
     )
 
     return {
-        "patient_id": patient_id,
-        "reports": reports,
-        "overall_severity": overall_severity,
-        "status": status,
-        "error": error,
+        KEY_PATIENT_ID:       patient_id,
+        KEY_REPORTS:          reports,
+        KEY_OVERALL_SEVERITY: overall_severity,
+        KEY_STATUS:           status,
+        KEY_ERROR:            error,
     }
 
 
@@ -264,7 +253,7 @@ if __name__ == "__main__":
     from memory.knowledge_store import KnowledgeStore
 
     project_root = Path(__file__).parent.parent
-    store = PatientStore()
+    store        = PatientStore()
 
     try:
         store._r.ping()
@@ -277,84 +266,75 @@ if __name__ == "__main__":
     knowledge_store.init()
     print(f"[PASS] ChromaDB ({knowledge_store.document_count} chunks)\n")
 
-    # ── Test A: patient_001 — expect conflict reports ──────────────────────────
+    # ── Test A: patient_001 — conflicts expected ───────────────────────────────
     print("=" * 60)
     print("TEST A: patient_001 — Arjun Sharma (conflicts expected)")
     print("=" * 60)
 
     p1_file = project_root / "data" / "mock_patients" / "patient_001.json"
-    with open(p1_file) as fh:
+    with open(p1_file, encoding="utf-8") as fh:
         p1_json = json.load(fh)
 
-    patient_id = p1_json["id"]
+    patient_id   = p1_json["id"]
     patient_name = f"{p1_json['name'][0]['given'][0]} {p1_json['name'][0]['family']}"
     store.delete_patient(patient_id)
 
     profile = build_profile(
-        {"mode": "patient", "patient_id": patient_id, "patient_json": p1_json},
+        {"mode": "patient", KEY_PATIENT_ID: patient_id, "patient_json": p1_json},
         store=store,
     )
-    audit = audit_interactions(
-        profile,
-        store=store,
-        knowledge_store=knowledge_store,
-    )
-    audit["patient_name"] = patient_name
+    audit = audit_interactions(profile, store=store, knowledge_store=knowledge_store)
+    audit[KEY_PATIENT_NAME] = patient_name
 
     result = run_agent(audit, store=store)
 
-    print(f"  status           : {result['status']}")
-    print(f"  overall_severity : {result['overall_severity']}")
-    print(f"  fallback_used    : {result['reports'].get('fallback_used')}")
+    print(f"  status           : {result[KEY_STATUS]}")
+    print(f"  overall_severity : {result[KEY_OVERALL_SEVERITY]}")
+    print(f"  fallback_used    : {result[KEY_REPORTS].get('fallback_used')}")
     print(f"\n--- Patient report (first 300 chars) ---")
-    print(result["reports"]["patient"][:300])
+    print(result[KEY_REPORTS]["patient"][:300])
     print(f"\n--- Coordinator report (first 300 chars) ---")
-    print(result["reports"]["coordinator"][:300])
+    print(result[KEY_REPORTS]["coordinator"][:300])
     print(f"\n--- Physician report (first 300 chars) ---")
-    print(result["reports"]["physician"][:300])
+    print(result[KEY_REPORTS]["physician"][:300])
 
-    assert result["status"] in ("OK", "FALLBACK")
-    assert all(k in result["reports"] for k in ("patient", "coordinator", "physician"))
-    assert all(len(result["reports"][k]) > 20 for k in ("patient", "coordinator", "physician"))
+    assert result[KEY_STATUS] in ("OK", "FALLBACK")
+    assert all(k in result[KEY_REPORTS] for k in ("patient", "coordinator", "physician"))
+    assert all(len(result[KEY_REPORTS][k]) > 20 for k in ("patient", "coordinator", "physician"))
     print("\n  [PASS]\n")
 
-    # ── Test B: patient_005 — no conflicts, safe confirmation ─────────────────
+    # ── Test B: patient_005 — no conflicts ─────────────────────────────────────
     print("=" * 60)
     print("TEST B: patient_005 — Kumar Nair (no conflicts)")
     print("=" * 60)
 
     p5_file = project_root / "data" / "mock_patients" / "patient_005.json"
-    with open(p5_file) as fh:
+    with open(p5_file, encoding="utf-8") as fh:
         p5_json = json.load(fh)
 
-    patient_id_5 = p5_json["id"]
+    patient_id_5   = p5_json["id"]
     patient_name_5 = f"{p5_json['name'][0]['given'][0]} {p5_json['name'][0]['family']}"
     store.delete_patient(patient_id_5)
 
     profile_5 = build_profile(
-        {"mode": "patient", "patient_id": patient_id_5, "patient_json": p5_json},
+        {"mode": "patient", KEY_PATIENT_ID: patient_id_5, "patient_json": p5_json},
         store=store,
     )
-    audit_5 = audit_interactions(
-        profile_5,
-        store=store,
-        knowledge_store=knowledge_store,
-    )
-    audit_5["patient_name"] = patient_name_5
+    audit_5 = audit_interactions(profile_5, store=store, knowledge_store=knowledge_store)
+    audit_5[KEY_PATIENT_NAME] = patient_name_5
 
     result_5 = run_agent(audit_5, store=store)
 
-    print(f"  status           : {result_5['status']}")
-    print(f"  overall_severity : {result_5['overall_severity']}")
+    print(f"  status           : {result_5[KEY_STATUS]}")
+    print(f"  overall_severity : {result_5[KEY_OVERALL_SEVERITY]}")
     print(f"\n--- Patient report ---")
-    print(result_5["reports"]["patient"])
+    print(result_5[KEY_REPORTS]["patient"])
 
-    assert result_5["status"] in ("OK", "FALLBACK", "SKIPPED")
-    assert all(k in result_5["reports"] for k in ("patient", "coordinator", "physician"))
-    assert all(len(result_5["reports"][k]) > 10 for k in ("patient", "coordinator", "physician"))
+    assert result_5[KEY_STATUS] in ("OK", "FALLBACK", "SKIPPED")
+    assert all(k in result_5[KEY_REPORTS] for k in ("patient", "coordinator", "physician"))
+    assert all(len(result_5[KEY_REPORTS][k]) > 10 for k in ("patient", "coordinator", "physician"))
     print("\n  [PASS]\n")
 
-    # Cleanup
     store.delete_patient(patient_id)
     store.delete_patient(patient_id_5)
     print("All ConflictReportGeneratorAgent tests passed.")
