@@ -41,3 +41,4 @@ data/chromadb/*/
 # OS
 .DS_Store
 Thumbs.db
+data/audit.db
