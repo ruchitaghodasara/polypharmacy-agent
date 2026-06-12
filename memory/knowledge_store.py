@@ -1,28 +1,28 @@
 """
 ChromaDB-backed knowledge store for drug interaction literature.
 
-Ingests data/knowledge/fda_interactions.txt on first init, splits it into
-~200-word chunks, embeds with sentence-transformers (all-MiniLM-L6-v2), and
-exposes semantic search via query().
+Ingests data/knowledge/fda_interactions.txt on first init, splits into
+~200-word chunks, embeds with sentence-transformers, and exposes semantic
+search via query().
 """
 
 from __future__ import annotations
 
 import os
 import re
-import textwrap
 from pathlib import Path
 from typing import List
 
 import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-_COLLECTION_NAME = "drug_interactions"
-_EMBED_MODEL = "all-MiniLM-L6-v2"
-_CHUNK_WORDS = 200
+COLLECTION_NAME   = "drug_interactions"
+EMBED_MODEL       = "all-MiniLM-L6-v2"
+CHUNK_SIZE_WORDS  = 200
+MAX_RAG_RESULTS   = 3
+
 _DEFAULT_TEXT_PATH = (
     Path(__file__).parent.parent / "data" / "knowledge" / "fda_interactions.txt"
 )
@@ -33,11 +33,8 @@ _DEFAULT_PERSIST_DIR = (
 
 # ── Chunker ────────────────────────────────────────────────────────────────────
 
-def _chunk_text(text: str, words_per_chunk: int = _CHUNK_WORDS) -> List[str]:
-    """
-    Split *text* into chunks of approximately *words_per_chunk* words, breaking
-    at paragraph boundaries where possible to preserve semantic coherence.
-    """
+def _chunk_text(text: str, words_per_chunk: int = CHUNK_SIZE_WORDS) -> List[str]:
+    """Split text into ~words_per_chunk chunks at paragraph boundaries."""
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
     chunks: List[str] = []
     current_words: List[str] = []
@@ -48,7 +45,7 @@ def _chunk_text(text: str, words_per_chunk: int = _CHUNK_WORDS) -> List[str]:
             chunks.append(" ".join(current_words))
             current_words = []
         current_words.extend(para_words)
-        # If a single paragraph already exceeds the limit, flush it immediately
+        # Flush immediately when a single paragraph exceeds the limit.
         if len(current_words) >= words_per_chunk:
             chunks.append(" ".join(current_words))
             current_words = []
@@ -63,7 +60,7 @@ def _chunk_text(text: str, words_per_chunk: int = _CHUNK_WORDS) -> List[str]:
 
 class KnowledgeStore:
     """
-    Semantic knowledge store backed by ChromaDB and sentence-transformers.
+    Semantic store backed by ChromaDB and sentence-transformers.
 
     Usage::
 
@@ -76,9 +73,11 @@ class KnowledgeStore:
         self,
         persist_dir: str | Path | None = None,
         text_path: str | Path | None = None,
-        embed_model: str = _EMBED_MODEL,
+        embed_model: str = EMBED_MODEL,
     ) -> None:
-        self._persist_dir = Path(persist_dir or os.environ.get("CHROMA_PERSIST_DIR", _DEFAULT_PERSIST_DIR))
+        self._persist_dir = Path(
+            persist_dir or os.environ.get("CHROMA_PERSIST_DIR", _DEFAULT_PERSIST_DIR)
+        )
         self._text_path = Path(text_path or _DEFAULT_TEXT_PATH)
         self._persist_dir.mkdir(parents=True, exist_ok=True)
 
@@ -92,62 +91,52 @@ class KnowledgeStore:
         self._embedder = SentenceTransformer(embed_model)
         self._collection: chromadb.Collection | None = None
 
-    # ── Embedding function wrapper for ChromaDB ────────────────────────────────
+    # ── Internal helpers ───────────────────────────────────────────────────────
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
+        """Return sentence-transformer embeddings for *texts*."""
         return self._embedder.encode(texts, show_progress_bar=False).tolist()
 
-    # ── init ───────────────────────────────────────────────────────────────────
+    # --- Write operations -----------------------------------------------------
 
     def init(self) -> None:
-        """
-        Ensure the ChromaDB collection exists and is populated.
-        Safe to call multiple times — will skip ingestion if the collection
-        already contains documents.
-        """
+        """Ensure the ChromaDB collection exists and is populated."""
         existing = [c.name for c in self._client.list_collections()]
 
-        if _COLLECTION_NAME in existing:
-            self._collection = self._client.get_collection(_COLLECTION_NAME)
-            count = self._collection.count()
-            if count > 0:
+        if COLLECTION_NAME in existing:
+            self._collection = self._client.get_collection(COLLECTION_NAME)
+            if self._collection.count() > 0:
                 return  # already populated — nothing to do
 
-        # Create (or re-open empty) collection
         self._collection = self._client.get_or_create_collection(
-            name=_COLLECTION_NAME,
+            name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
 
-        # Ingest
         if not self._text_path.exists():
             raise FileNotFoundError(
                 f"Knowledge source not found: {self._text_path}\n"
                 "Create data/knowledge/fda_interactions.txt before calling init()."
             )
 
-        text = self._text_path.read_text(encoding="utf-8")
+        text   = self._text_path.read_text(encoding="utf-8")
         chunks = _chunk_text(text)
-
-        ids = [f"chunk-{i:04d}" for i in range(len(chunks))]
-        embeddings = self._embed(chunks)
+        ids    = [f"chunk-{i:04d}" for i in range(len(chunks))]
 
         self._collection.add(
             ids=ids,
             documents=chunks,
-            embeddings=embeddings,
-            metadatas=[{"source": self._text_path.name, "chunk_index": i} for i in range(len(chunks))],
+            embeddings=self._embed(chunks),
+            metadatas=[
+                {"source": self._text_path.name, "chunk_index": i}
+                for i in range(len(chunks))
+            ],
         )
 
-    # ── query ──────────────────────────────────────────────────────────────────
+    # --- Read operations ------------------------------------------------------
 
-    def query(self, text: str, n_results: int = 3) -> List[str]:
-        """
-        Semantic search over the knowledge base.
-
-        Returns up to *n_results* document chunks ranked by cosine similarity
-        to *text*.  Raises RuntimeError if init() has not been called.
-        """
+    def query(self, text: str, n_results: int = MAX_RAG_RESULTS) -> List[str]:
+        """Return up to *n_results* chunks ranked by cosine similarity to *text*."""
         if self._collection is None:
             raise RuntimeError("KnowledgeStore not initialised — call init() first.")
 
@@ -158,14 +147,13 @@ class KnowledgeStore:
             include=["documents", "distances"],
         )
 
-        docs: List[str] = results["documents"][0] if results["documents"] else []
-        return docs
+        return results["documents"][0] if results["documents"] else []
 
-    # ── convenience ────────────────────────────────────────────────────────────
+    # --- Delete / TTL operations ----------------------------------------------
 
     @property
     def document_count(self) -> int:
-        """Number of chunks currently stored."""
+        """Number of chunks currently stored in the collection."""
         if self._collection is None:
             return 0
         return self._collection.count()
@@ -175,6 +163,7 @@ class KnowledgeStore:
 
 if __name__ == "__main__":
     import sys
+
     from dotenv import load_dotenv
 
     load_dotenv(Path(__file__).parent.parent / ".env")
@@ -199,7 +188,7 @@ if __name__ == "__main__":
     ]
 
     for q in queries:
-        print(f"Query: \"{q}\"")
+        print(f'Query: "{q}"')
         try:
             results = store.query(q, n_results=2)
             for i, chunk in enumerate(results, 1):
