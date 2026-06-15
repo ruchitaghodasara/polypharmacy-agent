@@ -92,7 +92,10 @@ async def lifespan(app: FastAPI):
         llm = get_llm()
         llm.invoke([HumanMessage(content="ping")])
         _llm_ok = True
-        log.info(f"✓ LLM ready: {os.getenv('LLM_PROVIDER', 'gemini')}")
+        model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        log.info(f"✓ LLM ready: Ollama {model} (local)")
+    except RuntimeError as exc:
+        log.error("✗ Ollama is not running. Open a terminal and run: ollama serve")
     except Exception as exc:
         log.error(f"✗ LLM FAILED: {exc}")
 

@@ -4,13 +4,8 @@ langchain-core==0.2.26
 langchain-community==0.2.11
 langgraph==0.1.19
 
-# Free LLM Providers
-langchain-google-genai       # Gemini via Google AI Studio (primary)
-langchain-groq               # Groq — Llama-3.3-70b (fallback)
-langchain-ollama             # Ollama — local models (offline fallback)
-google-generativeai          # Required by langchain-google-genai
-openai                       # Cerebras uses OpenAI-compat endpoint
-langchain-openai             # ChatOpenAI for Cerebras
+# Local LLM (Ollama — no API key required)
+langchain-ollama
 
 # Vector Store
 chromadb==0.5.3
