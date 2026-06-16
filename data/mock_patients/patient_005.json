@@ -1,0 +1,38 @@
+{
+  "resourceType": "Patient",
+  "id": "patient-005",
+  "meta": {
+    "profile": ["polypharmacy-safety-agent/fhir-lite-v1"]
+  },
+  "name": [
+    {
+      "use": "official",
+      "family": "Nair",
+      "given": ["Kumar"]
+    }
+  ],
+  "gender": "male",
+  "birthDate": "1957-12-04",
+  "age": 67,
+  "conditions": [
+    {
+      "code": "HTN",
+      "display": "Hypertension",
+      "onsetDate": "2010-05-15"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Amlodipine",
+      "dose": "5mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Vijay Menon",
+      "speciality": "Cardiology",
+      "condition": "Hypertension",
+      "prescription_date": "2023-08-10",
+      "active_status": true
+    }
+  ],
+  "allergies": [],
+  "notes": "Single-drug, single-doctor patient. Included as a negative control in the evaluation dataset — expected to produce zero interaction alerts. Useful for testing false-positive rate."
+}

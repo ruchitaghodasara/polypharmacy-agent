@@ -1,0 +1,157 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2024-01-01",
+  "source_note": "Rules derived from standard pharmacovigilance references (BNF, Drugs.com, FDA label data). For evaluation and development use only.",
+  "interactions": [
+    {
+      "id": "IR-001",
+      "drug_a": "Warfarin",
+      "drug_b": "Aspirin",
+      "severity": "CRITICAL",
+      "mechanism": "Aspirin inhibits platelet aggregation and also displaces Warfarin from plasma proteins, raising free Warfarin levels. The combined effect dramatically increases the risk of major bleeding including gastrointestinal haemorrhage and intracranial bleeding.",
+      "clinical_effects": ["major bleeding", "GI haemorrhage", "intracranial bleeding"],
+      "monitoring": "Avoid combination unless under specialist haematology supervision with close INR monitoring. If unavoidable, use lowest effective aspirin dose (75mg) and check INR every 2–3 days on initiation.",
+      "suggested_alternative": "Replace Aspirin with Clopidogrel for antiplatelet effect, or use Warfarin alone with strict INR targets. Discuss with prescribing cardiologist and haematologist."
+    },
+    {
+      "id": "IR-002",
+      "drug_a": "Warfarin",
+      "drug_b": "Atorvastatin",
+      "severity": "MODERATE",
+      "mechanism": "Atorvastatin inhibits CYP3A4, the enzyme responsible for Warfarin metabolism. This leads to higher circulating Warfarin concentrations and a raised INR, increasing bleeding risk.",
+      "clinical_effects": ["elevated INR", "increased bleeding risk"],
+      "monitoring": "Check INR within 1 week of starting or changing Atorvastatin dose. Inform patient to watch for unusual bruising or bleeding.",
+      "suggested_alternative": "Rosuvastatin has less CYP3A4 interaction with Warfarin; consider switching statin with cardiology review."
+    },
+    {
+      "id": "IR-003",
+      "drug_a": "Lisinopril",
+      "drug_b": "Ibuprofen",
+      "severity": "MODERATE",
+      "mechanism": "NSAIDs like Ibuprofen inhibit prostaglandin synthesis, which counteracts the vasodilatory mechanism of ACE inhibitors. This blunts the blood pressure-lowering effect of Lisinopril and, in susceptible patients, can cause acute kidney injury by reducing renal perfusion.",
+      "clinical_effects": ["reduced antihypertensive efficacy", "acute kidney injury", "hyperkalaemia"],
+      "monitoring": "Monitor blood pressure, serum creatinine, and potassium within 2 weeks of combination. Advise patient to stay well hydrated.",
+      "suggested_alternative": "Use Paracetamol (Acetaminophen) for analgesia where possible. If NSAID is necessary, consider short-course use with regular renal function monitoring."
+    },
+    {
+      "id": "IR-004",
+      "drug_a": "Hydroxychloroquine",
+      "drug_b": "Sertraline",
+      "severity": "MODERATE",
+      "mechanism": "Both drugs independently prolong the cardiac QT interval. Concurrent use increases the cumulative risk of QT prolongation, which can lead to the potentially fatal arrhythmia Torsades de Pointes.",
+      "clinical_effects": ["QT prolongation", "Torsades de Pointes", "ventricular arrhythmia"],
+      "monitoring": "Obtain baseline ECG before starting combination. Repeat at 4 weeks and annually, or if symptoms (palpitations, dizziness, syncope) develop. Avoid other QT-prolonging agents.",
+      "suggested_alternative": "Consider switching Sertraline to Mirtazapine (minimal QT effect) or Bupropion, with psychiatry review. If Sertraline must be retained, use lowest effective dose."
+    },
+    {
+      "id": "IR-005",
+      "drug_a": "Methotrexate",
+      "drug_b": "Ibuprofen",
+      "severity": "CRITICAL",
+      "mechanism": "NSAIDs reduce renal tubular secretion of Methotrexate. This causes Methotrexate to accumulate to toxic levels in the blood, raising the risk of severe mucositis, bone marrow suppression, hepatotoxicity, and nephrotoxicity.",
+      "clinical_effects": ["Methotrexate toxicity", "mucositis", "bone marrow suppression", "hepatotoxicity"],
+      "monitoring": "Avoid concurrent use. If unavoidable, hold NSAID for 24 hours before and 48 hours after weekly Methotrexate dose. Monitor full blood count and LFTs weekly.",
+      "suggested_alternative": "Use Paracetamol for analgesia. For inflammatory pain, discuss alternative DMARD adjustment with rheumatologist rather than adding NSAIDs."
+    },
+    {
+      "id": "IR-006",
+      "drug_a": "Methotrexate",
+      "drug_b": "Aspirin",
+      "severity": "CRITICAL",
+      "mechanism": "Aspirin, like other NSAIDs, impairs renal elimination of Methotrexate via organic anion transporter competition, causing Methotrexate toxicity at normally safe doses.",
+      "clinical_effects": ["Methotrexate toxicity", "pancytopenia", "renal failure"],
+      "monitoring": "Avoid combination. If both are essential (e.g., cardiac indication), use minimum aspirin dose (75mg) and monitor Methotrexate levels and full blood count closely.",
+      "suggested_alternative": "Consider Clopidogrel for antiplatelet effect. Discuss with rheumatologist and cardiologist."
+    },
+    {
+      "id": "IR-007",
+      "drug_a": "Hydroxychloroquine",
+      "drug_b": "Metformin",
+      "severity": "MODERATE",
+      "mechanism": "Hydroxychloroquine has an independent glucose-lowering effect via improved insulin receptor signalling. Combined with Metformin, this can produce additive hypoglycaemia, particularly during fasting or illness.",
+      "clinical_effects": ["hypoglycaemia", "dizziness", "loss of consciousness in severe cases"],
+      "monitoring": "Advise patient to monitor blood glucose more frequently. Educate on hypoglycaemia symptoms. Review Metformin dose if blood glucose runs low.",
+      "suggested_alternative": "No change required in most cases; dose adjustment of Metformin may be sufficient. Ensure patient has glucose tablets for emergencies."
+    },
+    {
+      "id": "IR-008",
+      "drug_a": "Prednisone",
+      "drug_b": "Metformin",
+      "severity": "MODERATE",
+      "mechanism": "Corticosteroids like Prednisone cause insulin resistance and raise hepatic glucose output, causing steroid-induced hyperglycaemia. This counteracts the glucose-lowering action of Metformin, potentially leading to uncontrolled diabetes.",
+      "clinical_effects": ["steroid-induced hyperglycaemia", "poor glycaemic control"],
+      "monitoring": "Monitor fasting blood glucose at initiation and weekly while on concurrent therapy. May require additional oral hypoglycaemic agent or insulin.",
+      "suggested_alternative": "Minimise steroid dose and duration. If prolonged steroid use required, add a short-acting insulin regimen tailored to meal times."
+    },
+    {
+      "id": "IR-009",
+      "drug_a": "Sertraline",
+      "drug_b": "Aspirin",
+      "severity": "MODERATE",
+      "mechanism": "SSRIs like Sertraline deplete platelet serotonin stores, which impairs platelet aggregation. Combined with Aspirin's antiplatelet effect, the risk of bleeding (especially GI bleeding) is significantly increased.",
+      "clinical_effects": ["GI bleeding", "increased bruising", "prolonged bleeding time"],
+      "monitoring": "Ask patient about GI symptoms at each review. Consider co-prescribing a proton pump inhibitor (e.g., Omeprazole) as gastroprotection.",
+      "suggested_alternative": "Use Paracetamol for analgesia. If Aspirin is essential for cardiac protection, add PPI and educate patient on bleeding signs."
+    },
+    {
+      "id": "IR-010",
+      "drug_a": "Prednisone",
+      "drug_b": "Ibuprofen",
+      "severity": "CRITICAL",
+      "mechanism": "Both corticosteroids and NSAIDs independently damage the gastric mucosa by reducing protective prostaglandin synthesis. Their combination multiplies the risk of peptic ulcer disease and gastrointestinal perforation.",
+      "clinical_effects": ["peptic ulcer", "GI perforation", "GI haemorrhage"],
+      "monitoring": "Avoid combination whenever possible. If necessary, prescribe a PPI (e.g., Omeprazole 20mg daily) for the duration of combined use.",
+      "suggested_alternative": "Replace Ibuprofen with Paracetamol or a topical NSAID. If systemic anti-inflammatory is needed, discuss with prescriber about adjusting Prednisone dose instead."
+    },
+    {
+      "id": "IR-011",
+      "drug_a": "Lisinopril",
+      "drug_b": "Spironolactone",
+      "severity": "CRITICAL",
+      "mechanism": "Both drugs elevate serum potassium — ACE inhibitors by blocking aldosterone-mediated potassium excretion, and Spironolactone as a potassium-sparing diuretic. Combination can cause life-threatening hyperkalaemia causing cardiac arrhythmias.",
+      "clinical_effects": ["hyperkalaemia", "cardiac arrhythmia", "cardiac arrest"],
+      "monitoring": "If combination is clinically necessary (e.g., heart failure), check serum potassium and renal function at baseline, at 1 week, and every 1–3 months thereafter.",
+      "suggested_alternative": "Use a loop diuretic (e.g., Furosemide) instead of Spironolactone where possible. Review indication for both drugs with cardiologist."
+    },
+    {
+      "id": "IR-012",
+      "drug_a": "Warfarin",
+      "drug_b": "Ibuprofen",
+      "severity": "CRITICAL",
+      "mechanism": "Ibuprofen inhibits platelet function and displaces Warfarin from plasma proteins, increasing free Warfarin levels and INR. Combined antiplatelet and anticoagulant effects greatly increase bleeding risk.",
+      "clinical_effects": ["major bleeding", "elevated INR", "GI haemorrhage"],
+      "monitoring": "Avoid combination. If analgesia is required, use Paracetamol. Monitor INR immediately if any NSAID is inadvertently taken.",
+      "suggested_alternative": "Paracetamol is the analgesic of choice for patients on Warfarin. Topical NSAIDs may be acceptable with caution."
+    },
+    {
+      "id": "IR-013",
+      "drug_a": "Amlodipine",
+      "drug_b": "Simvastatin",
+      "severity": "MODERATE",
+      "mechanism": "Amlodipine inhibits CYP3A4, the primary enzyme for Simvastatin metabolism. This raises Simvastatin plasma levels, increasing the risk of myopathy and rhabdomyolysis.",
+      "clinical_effects": ["myopathy", "rhabdomyolysis", "elevated creatine kinase"],
+      "monitoring": "Limit Simvastatin dose to 20mg daily when co-prescribed with Amlodipine. Check CK levels if patient reports muscle pain or weakness.",
+      "suggested_alternative": "Switch to Atorvastatin or Rosuvastatin, which are less affected by CYP3A4 inhibition at the doses used clinically."
+    },
+    {
+      "id": "IR-014",
+      "drug_a": "Methotrexate",
+      "drug_b": "Trimethoprim",
+      "severity": "CRITICAL",
+      "mechanism": "Trimethoprim and Methotrexate both inhibit dihydrofolate reductase (DHFR), leading to profound folate depletion. Combined use causes severe bone marrow toxicity, megaloblastic anaemia, and pancytopenia.",
+      "clinical_effects": ["bone marrow suppression", "pancytopenia", "megaloblastic anaemia"],
+      "monitoring": "Avoid combination entirely. If an antibacterial is needed, choose an alternative class (e.g., Amoxicillin or Cefalexin).",
+      "suggested_alternative": "For urinary tract infections: Nitrofurantoin or a cephalosporin. For respiratory infections: Amoxicillin or Azithromycin."
+    },
+    {
+      "id": "IR-015",
+      "drug_a": "Hydroxychloroquine",
+      "drug_b": "Amiodarone",
+      "severity": "CRITICAL",
+      "mechanism": "Both drugs prolong ventricular repolarisation (QT interval) through different mechanisms — Hydroxychloroquine by blocking hERG potassium channels, Amiodarone as a class III antiarrhythmic. Combined use markedly increases the risk of Torsades de Pointes.",
+      "clinical_effects": ["severe QT prolongation", "Torsades de Pointes", "ventricular fibrillation"],
+      "monitoring": "Combination is generally contraindicated. If unavoidable, continuous cardiac monitoring (telemetry) is required.",
+      "suggested_alternative": "Review indication for Hydroxychloroquine; consider disease-modifying alternatives for SLE/RA such as Belimumab or Rituximab if cardiac safety is the overriding concern."
+    }
+  ]
+}

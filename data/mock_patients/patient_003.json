@@ -1,0 +1,63 @@
+{
+  "resourceType": "Patient",
+  "id": "patient-003",
+  "meta": {
+    "profile": ["polypharmacy-safety-agent/fhir-lite-v1"]
+  },
+  "name": [
+    {
+      "use": "official",
+      "family": "Venkataraman",
+      "given": ["Ravi"]
+    }
+  ],
+  "gender": "male",
+  "birthDate": "1963-07-22",
+  "age": 61,
+  "conditions": [
+    {
+      "code": "RA",
+      "display": "Rheumatoid Arthritis",
+      "onsetDate": "2012-09-03"
+    },
+    {
+      "code": "HYPO",
+      "display": "Hypothyroidism",
+      "onsetDate": "2017-11-18"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Methotrexate",
+      "dose": "15mg",
+      "frequency": "once weekly",
+      "prescribing_doctor": "Dr. Leela Subramaniam",
+      "speciality": "Rheumatology",
+      "condition": "Rheumatoid Arthritis",
+      "prescription_date": "2023-01-08",
+      "active_status": true
+    },
+    {
+      "drug_name": "Levothyroxine",
+      "dose": "50mcg",
+      "frequency": "once daily on empty stomach",
+      "prescribing_doctor": "Dr. Harish Chandran",
+      "speciality": "Endocrinology",
+      "condition": "Hypothyroidism",
+      "prescription_date": "2023-01-20",
+      "active_status": true
+    },
+    {
+      "drug_name": "Folic Acid",
+      "dose": "5mg",
+      "frequency": "once daily (except Methotrexate day)",
+      "prescribing_doctor": "Dr. Leela Subramaniam",
+      "speciality": "Rheumatology",
+      "condition": "Methotrexate toxicity prophylaxis",
+      "prescription_date": "2023-01-08",
+      "active_status": true
+    }
+  ],
+  "allergies": [],
+  "notes": "Moderate-risk profile. Folic Acid is correctly prescribed as MTX adjunct. Levothyroxine absorption can be impaired by timing; patient should be counselled on drug spacing. No critical interactions in current regimen."
+}

@@ -1,0 +1,44 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# ChromaDB local data
+data/chromadb/*.sqlite3
+data/chromadb/chroma.sqlite3
+data/chromadb/*/
+
+# sentence-transformers model cache
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+data/audit.db

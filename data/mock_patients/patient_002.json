@@ -1,0 +1,78 @@
+{
+  "resourceType": "Patient",
+  "id": "patient-002",
+  "meta": {
+    "profile": ["polypharmacy-safety-agent/fhir-lite-v1"]
+  },
+  "name": [
+    {
+      "use": "official",
+      "family": "Krishnamurthy",
+      "given": ["Priya"]
+    }
+  ],
+  "gender": "female",
+  "birthDate": "1976-11-08",
+  "age": 48,
+  "conditions": [
+    {
+      "code": "T2DM",
+      "display": "Type 2 Diabetes Mellitus",
+      "onsetDate": "2016-04-12"
+    },
+    {
+      "code": "CAD",
+      "display": "Coronary Artery Disease",
+      "onsetDate": "2021-01-30"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Metformin",
+      "dose": "1000mg",
+      "frequency": "twice daily",
+      "prescribing_doctor": "Dr. Ramesh Iyer",
+      "speciality": "Endocrinology",
+      "condition": "Type 2 Diabetes Mellitus",
+      "prescription_date": "2023-02-01",
+      "active_status": true
+    },
+    {
+      "drug_name": "Aspirin",
+      "dose": "75mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Kavitha Nair",
+      "speciality": "Cardiology",
+      "condition": "Coronary Artery Disease",
+      "prescription_date": "2023-02-01",
+      "active_status": true
+    },
+    {
+      "drug_name": "Atorvastatin",
+      "dose": "40mg",
+      "frequency": "once daily at night",
+      "prescribing_doctor": "Dr. Kavitha Nair",
+      "speciality": "Cardiology",
+      "condition": "Coronary Artery Disease",
+      "prescription_date": "2023-02-01",
+      "active_status": true
+    },
+    {
+      "drug_name": "Warfarin",
+      "dose": "5mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Sundar Rajan",
+      "speciality": "Haematology",
+      "condition": "Atrial fibrillation prophylaxis",
+      "prescription_date": "2023-07-14",
+      "active_status": true
+    }
+  ],
+  "allergies": [
+    {
+      "substance": "Penicillin",
+      "reaction": "rash"
+    }
+  ],
+  "notes": "Critical interaction: Warfarin + Aspirin significantly increases bleeding risk. Atorvastatin can also potentiate Warfarin anticoagulant effect. Prescribing doctors are not co-ordinating."
+}

@@ -1,0 +1,136 @@
+{
+  "version": "1.0.0",
+  "description": "Ground-truth evaluation set for the Polypharmacy Safety Agent. Each record defines the expected output for a given patient. Use this to calculate precision, recall, and F1 for the interaction-detection pipeline.",
+  "severity_scale": {
+    "NONE": "No interactions detected",
+    "LOW": "Minor interactions — monitor only",
+    "MODERATE": "Clinically significant — action recommended",
+    "CRITICAL": "Potentially life-threatening — immediate review required"
+  },
+  "patients": [
+    {
+      "patient_id": "patient-001",
+      "patient_name": "Arjun Sharma",
+      "expected_overall_severity": "MODERATE",
+      "expected_alert": true,
+      "expected_conflicts": [
+        {
+          "drug_a": "Lisinopril",
+          "drug_b": "Ibuprofen",
+          "severity": "MODERATE",
+          "rule_id": "IR-003",
+          "rationale": "NSAID blunts ACE inhibitor antihypertensive effect and risks AKI"
+        },
+        {
+          "drug_a": "Hydroxychloroquine",
+          "drug_b": "Metformin",
+          "severity": "MODERATE",
+          "rule_id": "IR-007",
+          "rationale": "Additive hypoglycaemic effect due to HCQ insulin-sensitising properties"
+        }
+      ],
+      "expected_conflict_count": 2,
+      "normalisation_required": false,
+      "test_tags": ["multi-doctor", "nsaid-acei", "diabetes-hypoglycaemia"]
+    },
+    {
+      "patient_id": "patient-002",
+      "patient_name": "Priya Krishnamurthy",
+      "expected_overall_severity": "CRITICAL",
+      "expected_alert": true,
+      "expected_conflicts": [
+        {
+          "drug_a": "Warfarin",
+          "drug_b": "Aspirin",
+          "severity": "CRITICAL",
+          "rule_id": "IR-001",
+          "rationale": "Combined anticoagulant and antiplatelet therapy causes major bleeding risk"
+        },
+        {
+          "drug_a": "Warfarin",
+          "drug_b": "Atorvastatin",
+          "severity": "MODERATE",
+          "rule_id": "IR-002",
+          "rationale": "Atorvastatin raises Warfarin levels via CYP3A4 inhibition"
+        }
+      ],
+      "expected_conflict_count": 2,
+      "normalisation_required": false,
+      "test_tags": ["anticoagulant", "bleeding-risk", "critical-interaction"]
+    },
+    {
+      "patient_id": "patient-003",
+      "patient_name": "Ravi Venkataraman",
+      "expected_overall_severity": "NONE",
+      "expected_alert": false,
+      "expected_conflicts": [],
+      "expected_conflict_count": 0,
+      "normalisation_required": false,
+      "test_tags": ["no-conflict", "correct-adjunct", "negative-case"],
+      "notes": "Folic Acid is the intended companion to Methotrexate, not an interaction. Agent must not flag therapeutically intended combinations."
+    },
+    {
+      "patient_id": "patient-004",
+      "patient_name": "Sunita Balasubramanian",
+      "expected_overall_severity": "MODERATE",
+      "expected_alert": true,
+      "expected_conflicts": [
+        {
+          "drug_a": "Hydroxychloroquine",
+          "drug_b": "Sertraline",
+          "severity": "MODERATE",
+          "rule_id": "IR-004",
+          "rationale": "Both drugs prolong QT interval; combined use increases Torsades de Pointes risk"
+        }
+      ],
+      "expected_conflict_count": 1,
+      "normalisation_required": false,
+      "test_tags": ["qt-prolongation", "cardiac-risk", "multi-doctor"]
+    },
+    {
+      "patient_id": "patient-005",
+      "patient_name": "Kumar Nair",
+      "expected_overall_severity": "NONE",
+      "expected_alert": false,
+      "expected_conflicts": [],
+      "expected_conflict_count": 0,
+      "normalisation_required": false,
+      "test_tags": ["single-drug", "negative-control", "false-positive-test"],
+      "notes": "Single medication, single doctor. Strictly zero conflicts expected. Any alert here is a false positive."
+    },
+    {
+      "patient_id": "patient-006",
+      "patient_name": "Meena Pillai",
+      "expected_overall_severity": "MODERATE",
+      "expected_alert": true,
+      "expected_conflicts": [
+        {
+          "drug_a": "Lisinopril",
+          "drug_b": "Ibuprofen",
+          "severity": "MODERATE",
+          "rule_id": "IR-003",
+          "rationale": "Brufen (Ibuprofen) blunts Lisinopril antihypertensive effect and risks AKI",
+          "normalisation_applied": {
+            "original_name": "Brufen",
+            "resolved_to": "Ibuprofen",
+            "source": "data/drug_synonyms.json"
+          }
+        }
+      ],
+      "expected_conflict_count": 1,
+      "normalisation_required": true,
+      "test_tags": ["brand-name-normalisation", "nsaid-acei", "synonym-lookup"],
+      "notes": "The agent MUST normalise 'Brufen' → 'Ibuprofen' before checking interactions. Failure to normalise means the conflict is silently missed. This is the primary test for the normalisation pipeline."
+    }
+  ],
+  "evaluation_metrics": {
+    "total_patients": 6,
+    "patients_with_alerts": 4,
+    "patients_without_alerts": 2,
+    "total_expected_conflicts": 6,
+    "critical_conflicts": 1,
+    "moderate_conflicts": 5,
+    "normalisation_test_cases": 1,
+    "negative_control_cases": 2
+  }
+}

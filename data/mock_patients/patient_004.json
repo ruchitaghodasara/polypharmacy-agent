@@ -1,0 +1,68 @@
+{
+  "resourceType": "Patient",
+  "id": "patient-004",
+  "meta": {
+    "profile": ["polypharmacy-safety-agent/fhir-lite-v1"]
+  },
+  "name": [
+    {
+      "use": "official",
+      "family": "Balasubramanian",
+      "given": ["Sunita"]
+    }
+  ],
+  "gender": "female",
+  "birthDate": "1979-05-30",
+  "age": 45,
+  "conditions": [
+    {
+      "code": "SLE",
+      "display": "Systemic Lupus Erythematosus",
+      "onsetDate": "2014-03-17"
+    },
+    {
+      "code": "MDD",
+      "display": "Major Depressive Disorder",
+      "onsetDate": "2022-10-05"
+    }
+  ],
+  "medications": [
+    {
+      "drug_name": "Prednisone",
+      "dose": "10mg",
+      "frequency": "once daily in the morning",
+      "prescribing_doctor": "Dr. Meera Krishnaswamy",
+      "speciality": "Rheumatology",
+      "condition": "Systemic Lupus Erythematosus",
+      "prescription_date": "2023-04-12",
+      "active_status": true
+    },
+    {
+      "drug_name": "Sertraline",
+      "dose": "50mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Arun Babu",
+      "speciality": "Psychiatry",
+      "condition": "Major Depressive Disorder",
+      "prescription_date": "2023-06-01",
+      "active_status": true
+    },
+    {
+      "drug_name": "Hydroxychloroquine",
+      "dose": "200mg",
+      "frequency": "once daily",
+      "prescribing_doctor": "Dr. Meera Krishnaswamy",
+      "speciality": "Rheumatology",
+      "condition": "Systemic Lupus Erythematosus",
+      "prescription_date": "2023-04-12",
+      "active_status": true
+    }
+  ],
+  "allergies": [
+    {
+      "substance": "Sulfonamides",
+      "reaction": "Stevens-Johnson syndrome (historical)"
+    }
+  ],
+  "notes": "Both Hydroxychloroquine and Sertraline carry QT-prolongation risk; combined use requires ECG monitoring. Corticosteroid (Prednisone) can worsen depressive symptoms. Prescribers unaware of each other's prescriptions."
+}
